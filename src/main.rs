@@ -1,7 +1,10 @@
 mod commands;
 mod config;
+mod direnv_setup;
 mod nix;
 mod platform;
+mod tend_setup;
+mod tools;
 
 use clap::{Parser, Subcommand};
 
@@ -37,6 +40,25 @@ enum Commands {
         #[arg(long)]
         version: Option<String>,
     },
+
+    /// Bootstrap a bare machine: nix → direnv → tend → workspace repos
+    Bootstrap {
+        /// Skip direnv setup
+        #[arg(long)]
+        skip_direnv: bool,
+
+        /// Skip tend setup
+        #[arg(long)]
+        skip_tend: bool,
+
+        /// GitHub org for tend workspace config
+        #[arg(long)]
+        org: Option<String>,
+
+        /// Skip confirmation prompts
+        #[arg(long)]
+        no_confirm: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -58,5 +80,11 @@ fn main() -> anyhow::Result<()> {
                 .transpose()?;
             commands::ensure::run(version_req)
         }
+        Commands::Bootstrap {
+            skip_direnv,
+            skip_tend,
+            org,
+            no_confirm,
+        } => commands::bootstrap::run(skip_direnv, skip_tend, org, no_confirm),
     }
 }
