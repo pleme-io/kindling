@@ -54,7 +54,7 @@ pub struct UserConfig {
 }
 
 fn default_shell() -> String {
-    "zsh".to_string()
+    "blzsh".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
