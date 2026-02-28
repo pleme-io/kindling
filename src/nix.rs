@@ -1,6 +1,8 @@
+use serde::Serialize;
 use std::path::PathBuf;
 use std::process::Command;
 
+#[derive(Debug, Serialize)]
 pub struct NixStatus {
     pub installed: bool,
     pub version: Option<semver::Version>,

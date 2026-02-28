@@ -3,10 +3,22 @@ use colored::Colorize;
 
 use crate::commands::install;
 use crate::nix;
+use crate::node_identity::{nix_gen, NodeIdentity};
 use crate::tools;
 use crate::{direnv_setup, tend_setup};
 
-pub fn run(skip_direnv: bool, skip_tend: bool, org: Option<String>, no_confirm: bool) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+pub fn run(
+    skip_direnv: bool,
+    skip_tend: bool,
+    org: Option<String>,
+    no_confirm: bool,
+    profile: Option<String>,
+    hostname: Option<String>,
+    user: Option<String>,
+    age_key_file: Option<String>,
+    node_config: Option<String>,
+) -> Result<()> {
     println!("{}", "kindling bootstrap".bold());
     println!();
 
@@ -95,6 +107,96 @@ pub fn run(skip_direnv: bool, skip_tend: bool, org: Option<String>, no_confirm: 
         println!();
     }
 
+    // ── Step 4: Node Identity ────────────────────────────────────
+    let has_profile_args = profile.is_some() || node_config.is_some();
+
+    if has_profile_args {
+        println!("{} Step 4: Node Identity", ">>".blue().bold());
+
+        let identity = if let Some(config_path) = node_config {
+            // Load from existing node.yaml
+            let path = std::path::PathBuf::from(&config_path);
+            println!("  Loading node config from {}", config_path);
+            NodeIdentity::load(&path)?
+        } else {
+            // Build from CLI flags
+            let profile_name = profile.as_deref().unwrap_or("macos-developer");
+            let host = hostname
+                .as_deref()
+                .or_else(|| {
+                    ::hostname::get()
+                        .ok()
+                        .and_then(|h| h.into_string().ok())
+                        .as_deref()
+                        .map(|_| "")
+                })
+                .unwrap_or("localhost");
+
+            // Try to get the actual hostname if not provided
+            let host = if host.is_empty() {
+                hostname::get()
+                    .map(|h| h.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| "localhost".to_string())
+            } else {
+                host.to_string()
+            };
+
+            let username = user
+                .as_deref()
+                .unwrap_or_else(|| {
+                    // Would use std::env::var but need static lifetime
+                    "user"
+                });
+
+            NodeIdentity::from_bootstrap(
+                profile_name,
+                &host,
+                username,
+                age_key_file.as_deref(),
+            )
+        };
+
+        // Save node.yaml
+        let node_path = NodeIdentity::default_path();
+        identity.save(&node_path)?;
+        println!(
+            "{} Node identity saved to {}",
+            "ok".green().bold(),
+            node_path.display()
+        );
+        actions.push("Created node identity");
+        println!();
+
+        // ── Step 5: Nix Generation ───────────────────────────────
+        println!("{} Step 5: Nix Generation", ">>".blue().bold());
+
+        let gen_dir = nix_gen::generate(&identity)?;
+        println!(
+            "{} Generated Nix config in {}",
+            "ok".green().bold(),
+            gen_dir.display()
+        );
+        actions.push("Generated Nix configuration");
+        println!();
+
+        // ── Step 6: System Activate ──────────────────────────────
+        if !no_confirm {
+            println!(
+                "{} Generated config is ready at {}",
+                "::".blue().bold(),
+                gen_dir.display()
+            );
+            println!(
+                "{} Run `kindling apply` to activate the system configuration.",
+                "::".blue().bold()
+            );
+            println!(
+                "{} Or run `kindling apply --diff` to preview changes first.",
+                "::".blue().bold()
+            );
+        }
+    }
+
     // ── Summary ──────────────────────────────────────────────────
     println!("{}", "── Summary ──".bold());
     if actions.is_empty() {
@@ -109,10 +211,12 @@ pub fn run(skip_direnv: bool, skip_tend: bool, org: Option<String>, no_confirm: 
         "{} Restart your shell to pick up any PATH changes.",
         "::".blue().bold()
     );
-    println!(
-        "{} In project directories, run `direnv allow` to activate.",
-        "::".blue().bold()
-    );
+    if !has_profile_args {
+        println!(
+            "{} In project directories, run `direnv allow` to activate.",
+            "::".blue().bold()
+        );
+    }
 
     Ok(())
 }

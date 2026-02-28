@@ -1,14 +1,15 @@
 use anyhow::{bail, Result};
+use serde::Serialize;
 use std::fmt;
 use std::str::FromStr;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub enum Os {
     MacOS,
     Linux,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub enum Arch {
     X86_64,
     Aarch64,
@@ -41,7 +42,7 @@ impl fmt::Display for Backend {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Platform {
     pub os: Os,
     pub arch: Arch,

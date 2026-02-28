@@ -1,15 +1,22 @@
+mod api;
 mod commands;
 mod config;
 mod direnv_setup;
+mod domain;
+#[cfg(feature = "grpc")]
+mod grpc;
 mod nix;
+mod node_identity;
 mod platform;
+mod server;
+mod telemetry;
 mod tend_setup;
 mod tools;
 
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "kindling", version, about = "Cross-platform unattended Nix installer")]
+#[command(name = "kindling", version, about = "Cross-platform unattended Nix installer and daemon")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -41,7 +48,7 @@ enum Commands {
         version: Option<String>,
     },
 
-    /// Bootstrap a bare machine: nix → direnv → tend → workspace repos
+    /// Bootstrap a bare machine: nix → direnv → tend → profile → apply
     Bootstrap {
         /// Skip direnv setup
         #[arg(long)]
@@ -58,6 +65,86 @@ enum Commands {
         /// Skip confirmation prompts
         #[arg(long)]
         no_confirm: bool,
+
+        /// Machine profile from kindling-profiles
+        #[arg(long)]
+        profile: Option<String>,
+
+        /// Hostname for this machine
+        #[arg(long)]
+        hostname: Option<String>,
+
+        /// Username
+        #[arg(long)]
+        user: Option<String>,
+
+        /// Path to age key file for SOPS secrets
+        #[arg(long)]
+        age_key_file: Option<String>,
+
+        /// Path to existing node.yaml (skip interactive setup)
+        #[arg(long)]
+        node_config: Option<String>,
+    },
+
+    /// Run the kindling daemon (REST + GraphQL + telemetry)
+    Daemon {
+        /// HTTP listen address (overrides config)
+        #[arg(long)]
+        http_addr: Option<String>,
+
+        /// gRPC listen address (overrides config, requires grpc feature)
+        #[arg(long)]
+        grpc_addr: Option<String>,
+
+        /// Log level (overrides config)
+        #[arg(long)]
+        log_level: Option<String>,
+
+        /// Path to config file (default: ~/.config/kindling/config.toml)
+        #[arg(long)]
+        config: Option<String>,
+    },
+
+    /// Manage machine profiles
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommands,
+    },
+
+    /// Read node.yaml, regenerate Nix config, and rebuild the system
+    Apply {
+        /// Show what would change without applying
+        #[arg(long)]
+        diff: bool,
+    },
+
+    /// Fleet management — deploy to remote nodes
+    Fleet {
+        #[command(subcommand)]
+        command: FleetCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProfileCommands {
+    /// List available profiles
+    List,
+    /// Show details for a specific profile
+    Show {
+        /// Profile name
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum FleetCommands {
+    /// Check connectivity to all fleet peers
+    Status,
+    /// Deploy configuration to a remote node
+    Apply {
+        /// Node name (must be in fleet.peers)
+        node: String,
     },
 }
 
@@ -85,6 +172,36 @@ fn main() -> anyhow::Result<()> {
             skip_tend,
             org,
             no_confirm,
-        } => commands::bootstrap::run(skip_direnv, skip_tend, org, no_confirm),
+            profile,
+            hostname,
+            user,
+            age_key_file,
+            node_config,
+        } => commands::bootstrap::run(
+            skip_direnv,
+            skip_tend,
+            org,
+            no_confirm,
+            profile,
+            hostname,
+            user,
+            age_key_file,
+            node_config,
+        ),
+        Commands::Daemon {
+            http_addr,
+            grpc_addr,
+            log_level,
+            config,
+        } => commands::daemon::run(http_addr, grpc_addr, log_level, config),
+        Commands::Profile { command } => match command {
+            ProfileCommands::List => commands::profile::list(),
+            ProfileCommands::Show { name } => commands::profile::show(&name),
+        },
+        Commands::Apply { diff } => commands::apply::run(diff),
+        Commands::Fleet { command } => match command {
+            FleetCommands::Status => commands::fleet::status(),
+            FleetCommands::Apply { node } => commands::fleet::apply(&node),
+        },
     }
 }

@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package kindling;
+
+service KindlingService {
+  rpc GetStatus(Empty) returns (NixStatusResponse);
+  rpc GetPlatform(Empty) returns (PlatformInfoResponse);
+  rpc GetStoreInfo(Empty) returns (StoreInfoResponse);
+  rpc GetNixConfig(Empty) returns (NixConfigResponse);
+  rpc GetGcStatus(Empty) returns (GcStatusResponse);
+  rpc RunGc(Empty) returns (GcResultResponse);
+  rpc OptimiseStore(Empty) returns (OptimiseResultResponse);
+  rpc GetCaches(Empty) returns (CachesResponse);
+  rpc GetHealth(Empty) returns (HealthResponse);
+}
+
+message Empty {}
+
+message NixStatusResponse {
+  bool installed = 1;
+  string version = 2;
+  string nix_path = 3;
+  string install_method = 4;
+}
+
+message PlatformInfoResponse {
+  string os = 1;
+  string arch = 2;
+  string target_triple = 3;
+  bool is_wsl = 4;
+  bool has_systemd = 5;
+}
+
+message StoreInfoResponse {
+  string store_dir = 1;
+  uint64 store_size_bytes = 2;
+  uint64 path_count = 3;
+  uint64 roots_count = 4;
+}
+
+message NixConfigResponse {
+  repeated string substituters = 1;
+  repeated string trusted_public_keys = 2;
+  string max_jobs = 3;
+  string cores = 4;
+  repeated string experimental_features = 5;
+  string sandbox = 6;
+}
+
+message GcStatusResponse {
+  bool auto_gc_enabled = 1;
+  uint64 schedule_secs = 2;
+  string last_gc_at = 3;
+  uint64 last_gc_freed_bytes = 4;
+}
+
+message GcResultResponse {
+  uint64 freed_bytes = 1;
+  uint64 freed_paths = 2;
+  double duration_secs = 3;
+}
+
+message OptimiseResultResponse {
+  uint64 deduplicated_bytes = 1;
+  double duration_secs = 2;
+}
+
+message CacheInfoItem {
+  string substituter = 1;
+  bool reachable = 2;
+  uint64 latency_ms = 3;
+}
+
+message CachesResponse {
+  repeated CacheInfoItem caches = 1;
+}
+
+message HealthResponse {
+  string version = 1;
+  uint64 uptime_secs = 2;
+  PlatformInfoResponse platform = 3;
+  NixStatusResponse nix = 4;
+}

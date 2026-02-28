@@ -1,5 +1,9 @@
+pub mod apply;
 pub mod bootstrap;
 pub mod check;
+pub mod daemon;
 pub mod ensure;
+pub mod fleet;
 pub mod install;
+pub mod profile;
 pub mod uninstall;
