@@ -12,6 +12,10 @@ service KindlingService {
   rpc OptimiseStore(Empty) returns (OptimiseResultResponse);
   rpc GetCaches(Empty) returns (CachesResponse);
   rpc GetHealth(Empty) returns (HealthResponse);
+
+  // Node identity + report
+  rpc GetIdentity(Empty) returns (NodeIdentityResponse);
+  rpc GetReport(Empty) returns (NodeReportResponse);
 }
 
 message Empty {}
@@ -80,4 +84,18 @@ message HealthResponse {
   uint64 uptime_secs = 2;
   PlatformInfoResponse platform = 3;
   NixStatusResponse nix = 4;
+}
+
+// Node identity — uses raw_json for deeply nested variable-length data
+message NodeIdentityResponse {
+  string hostname = 1;
+  string profile = 2;
+  string raw_json = 3;
+}
+
+// Node report — uses raw_json for complex nested snapshots
+message NodeReportResponse {
+  string timestamp = 1;
+  string daemon_version = 2;
+  string raw_json = 3;
 }

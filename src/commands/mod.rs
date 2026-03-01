@@ -6,4 +6,6 @@ pub mod ensure;
 pub mod fleet;
 pub mod install;
 pub mod profile;
+pub mod query;
+pub mod report;
 pub mod uninstall;

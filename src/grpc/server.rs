@@ -5,6 +5,7 @@ use tonic::{Request, Response, Status};
 use tracing::info;
 
 use crate::domain::nix_service::NixService;
+use crate::domain::node_service::NodeService;
 
 pub mod proto {
     tonic::include_proto!("kindling");
@@ -14,7 +15,8 @@ use proto::kindling_service_server::{KindlingService, KindlingServiceServer};
 use proto::*;
 
 pub struct KindlingGrpc {
-    service: Arc<NixService>,
+    nix: Arc<NixService>,
+    node: Arc<NodeService>,
 }
 
 #[tonic::async_trait]
@@ -23,7 +25,7 @@ impl KindlingService for KindlingGrpc {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<NixStatusResponse>, Status> {
-        let s = self.service.status().await;
+        let s = self.nix.status().await;
         Ok(Response::new(NixStatusResponse {
             installed: s.installed,
             version: s.version.unwrap_or_default(),
@@ -36,7 +38,7 @@ impl KindlingService for KindlingGrpc {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<PlatformInfoResponse>, Status> {
-        let p = self.service.platform_info();
+        let p = self.nix.platform_info();
         Ok(Response::new(PlatformInfoResponse {
             os: p.os,
             arch: p.arch,
@@ -51,7 +53,7 @@ impl KindlingService for KindlingGrpc {
         _request: Request<Empty>,
     ) -> Result<Response<StoreInfoResponse>, Status> {
         let s = self
-            .service
+            .nix
             .store_info()
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -68,7 +70,7 @@ impl KindlingService for KindlingGrpc {
         _request: Request<Empty>,
     ) -> Result<Response<NixConfigResponse>, Status> {
         let c = self
-            .service
+            .nix
             .nix_config()
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -86,7 +88,7 @@ impl KindlingService for KindlingGrpc {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<GcStatusResponse>, Status> {
-        let g = self.service.gc_status().await;
+        let g = self.nix.gc_status().await;
         Ok(Response::new(GcStatusResponse {
             auto_gc_enabled: g.auto_gc_enabled,
             schedule_secs: g.schedule_secs,
@@ -100,7 +102,7 @@ impl KindlingService for KindlingGrpc {
         _request: Request<Empty>,
     ) -> Result<Response<GcResultResponse>, Status> {
         let r = self
-            .service
+            .nix
             .trigger_gc()
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -116,7 +118,7 @@ impl KindlingService for KindlingGrpc {
         _request: Request<Empty>,
     ) -> Result<Response<OptimiseResultResponse>, Status> {
         let r = self
-            .service
+            .nix
             .optimise_store()
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -131,7 +133,7 @@ impl KindlingService for KindlingGrpc {
         _request: Request<Empty>,
     ) -> Result<Response<CachesResponse>, Status> {
         let caches = self
-            .service
+            .nix
             .cache_info()
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -151,7 +153,7 @@ impl KindlingService for KindlingGrpc {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<HealthResponse>, Status> {
-        let h = self.service.health().await;
+        let h = self.nix.health().await;
         Ok(Response::new(HealthResponse {
             version: h.version,
             uptime_secs: h.uptime_secs,
@@ -170,15 +172,57 @@ impl KindlingService for KindlingGrpc {
             }),
         }))
     }
+
+    async fn get_identity(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<NodeIdentityResponse>, Status> {
+        let identity = self
+            .node
+            .identity()
+            .await
+            .ok_or_else(|| Status::not_found("no node identity loaded"))?;
+
+        let json = serde_json::to_string(&identity)
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(NodeIdentityResponse {
+            hostname: identity.hostname,
+            profile: identity.profile,
+            raw_json: json,
+        }))
+    }
+
+    async fn get_report(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<NodeReportResponse>, Status> {
+        let stored = self
+            .node
+            .cached_report()
+            .await
+            .ok_or_else(|| {
+                Status::unavailable("report not yet available (initial collection in progress)")
+            })?;
+
+        let json = serde_json::to_string(&stored)
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(NodeReportResponse {
+            timestamp: stored.report.timestamp.to_rfc3339(),
+            daemon_version: stored.report.daemon_version,
+            raw_json: json,
+        }))
+    }
 }
 
-pub async fn serve(service: Arc<NixService>, addr: &str) -> Result<()> {
+pub async fn serve(nix: Arc<NixService>, node: Arc<NodeService>, addr: &str) -> Result<()> {
     let addr = addr.parse().context("parsing gRPC address")?;
 
     info!(%addr, "gRPC server listening");
 
     tonic::transport::Server::builder()
-        .add_service(KindlingServiceServer::new(KindlingGrpc { service }))
+        .add_service(KindlingServiceServer::new(KindlingGrpc { nix, node }))
         .serve(addr)
         .await
         .context("gRPC server error")?;

@@ -1,4 +1,5 @@
 mod api;
+mod client;
 mod commands;
 mod config;
 mod direnv_setup;
@@ -124,6 +125,43 @@ enum Commands {
         #[command(subcommand)]
         command: FleetCommands,
     },
+
+    /// Generate a runtime report for this node
+    Report {
+        /// Output format (table or json)
+        #[arg(long, default_value = "table")]
+        format: String,
+
+        /// Push report to fleet controller
+        #[arg(long)]
+        push: bool,
+
+        /// Fleet controller URL (used with --push)
+        #[arg(long)]
+        controller_url: Option<String>,
+
+        /// Force live collection (bypass cache), write result to disk store
+        #[arg(long)]
+        fresh: bool,
+
+        /// Read from persisted file on disk (no daemon needed, no collection)
+        #[arg(long)]
+        cached: bool,
+    },
+
+    /// Query a kindling daemon's REST API
+    Query {
+        /// Target node name (from config nodes map; defaults to localhost)
+        #[arg(long, global = true)]
+        node: Option<String>,
+
+        /// Output format (table or json)
+        #[arg(long, global = true, default_value = "table")]
+        format: String,
+
+        #[command(subcommand)]
+        command: commands::query::QueryCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -203,5 +241,17 @@ fn main() -> anyhow::Result<()> {
             FleetCommands::Status => commands::fleet::status(),
             FleetCommands::Apply { node } => commands::fleet::apply(&node),
         },
+        Commands::Report {
+            format,
+            push,
+            controller_url,
+            fresh,
+            cached,
+        } => commands::report::run(&format, push, controller_url.as_deref(), fresh, cached),
+        Commands::Query {
+            node,
+            format,
+            command,
+        } => commands::query::run(node.as_deref(), &format, &command),
     }
 }

@@ -4,15 +4,17 @@ use axum::extract::State;
 use axum::response::Html;
 use axum::routing::get;
 use axum::Router;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 
 use crate::api::graphql::{self, KindlingSchema};
-use crate::api::rest;
+use crate::api::rest::{self, AppState};
 use crate::config::DaemonConfig;
 use crate::domain::nix_service::NixService;
+use crate::domain::node_service::NodeService;
 
 pub async fn run(config: DaemonConfig) -> Result<()> {
     // Init tracing
@@ -26,19 +28,31 @@ pub async fn run(config: DaemonConfig) -> Result<()> {
 
     info!(version = env!("CARGO_PKG_VERSION"), "Kindling daemon starting");
 
-    // Create shared NixService
-    let service = NixService::new(config.clone());
+    // Create shared services
+    let nix_service = NixService::new(config.clone());
+    let node_service = Arc::new(NodeService::new(
+        config.identity.clone(),
+        config.report.clone(),
+    ));
+
+    // Load persisted report from disk into memory cache (startup)
+    node_service.load_from_disk().await;
+
+    let app_state = AppState {
+        nix: nix_service.clone(),
+        node: node_service.clone(),
+    };
 
     // Build GraphQL schema
-    let schema = graphql::build_schema(service.clone());
+    let schema = graphql::build_schema(nix_service.clone(), node_service.clone());
 
     // Build GraphQL sub-router with its own state
     let graphql_router = Router::new()
         .route("/graphql", get(graphql_playground).post(graphql_handler))
         .with_state(schema);
 
-    // Build Axum router: REST (with NixService state) + GraphQL (with schema state)
-    let app = rest::router(service.clone())
+    // Build Axum router: REST (with AppState) + GraphQL (with schema state)
+    let app = rest::router(app_state)
         .merge(graphql_router)
         .layer(TraceLayer::new_for_http());
 
@@ -50,9 +64,28 @@ pub async fn run(config: DaemonConfig) -> Result<()> {
 
     info!(addr = %http_addr, "HTTP server listening");
 
+    // Spawn initial discovery (background — daemon starts serving immediately)
+    {
+        let node = node_service.clone();
+        tokio::spawn(async move {
+            info!("running initial report collection");
+            match node.refresh().await {
+                Ok(stored) => {
+                    info!(
+                        checksum = %stored.checksum,
+                        "initial report collection completed"
+                    );
+                }
+                Err(e) => {
+                    warn!(error = %e, "initial report collection failed");
+                }
+            }
+        });
+    }
+
     // Spawn telemetry push loop
     if config.telemetry.enabled {
-        let telemetry_service = service.clone();
+        let telemetry_service = nix_service.clone();
         let telemetry_config = config.telemetry.clone();
         tokio::spawn(async move {
             crate::telemetry::run_push_loop(telemetry_service, &telemetry_config).await;
@@ -61,7 +94,7 @@ pub async fn run(config: DaemonConfig) -> Result<()> {
 
     // Spawn GC scheduler
     if config.gc.schedule_secs > 0 {
-        let gc_service = service.clone();
+        let gc_service = nix_service.clone();
         let gc_interval = config.gc.schedule_secs;
         tokio::spawn(async move {
             let mut interval =
@@ -86,13 +119,39 @@ pub async fn run(config: DaemonConfig) -> Result<()> {
         });
     }
 
+    // Spawn periodic report refresh
+    if config.report.refresh_interval_secs > 0 {
+        let report_node = node_service.clone();
+        let interval_secs = config.report.refresh_interval_secs;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+            // Skip the first tick — initial discovery already handles it
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                match report_node.refresh().await {
+                    Ok(stored) => {
+                        info!(
+                            checksum = %stored.checksum,
+                            "periodic report refresh completed"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "periodic report refresh failed");
+                    }
+                }
+            }
+        });
+    }
+
     // Optionally spawn gRPC server
     #[cfg(feature = "grpc")]
     {
-        let grpc_service = service.clone();
+        let grpc_nix = nix_service.clone();
+        let grpc_node = node_service.clone();
         let grpc_addr = config.grpc_addr.clone();
         tokio::spawn(async move {
-            if let Err(e) = crate::grpc::serve(grpc_service, &grpc_addr).await {
+            if let Err(e) = crate::grpc::serve(grpc_nix, grpc_node, &grpc_addr).await {
                 tracing::error!(error = %e, "gRPC server failed");
             }
         });

@@ -8,10 +8,9 @@ pub fn run(
     log_level: Option<String>,
     config_path: Option<String>,
 ) -> Result<()> {
-    // Load config from file (custom path or default)
+    // Load config from figment chain (optionally with an extra file on top)
     let mut daemon_config = if let Some(path) = config_path {
-        let content = std::fs::read_to_string(&path)?;
-        let cfg: config::Config = toml::from_str(&content)?;
+        let cfg = config::load_with_path(&path)?;
         cfg.daemon.unwrap_or_default()
     } else {
         let cfg = config::load()?;
