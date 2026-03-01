@@ -22,9 +22,9 @@ with lib; let
     then "${config.home.homeDirectory}/Library/Logs"
     else "${config.home.homeDirectory}/.local/share/kindling/logs";
 
-  # ── Daemon TOML config (generated from nix options) ──────────────────
-  kindlingDaemonConfig = pkgs.writeText "kindling-daemon.toml"
-    (lib.generators.toTOML {} ({
+  # ── Daemon YAML config (generated from nix options) ──────────────────
+  kindlingDaemonConfig = pkgs.writeText "kindling-daemon.yaml"
+    (lib.generators.toYAML {} ({
       auto_install = true;
       backend = "upstream";
       daemon = {
