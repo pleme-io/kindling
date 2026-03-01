@@ -102,6 +102,7 @@ dependencies = [
  "asynk-strim",
  "base64",
  "bytes",
+ "chrono",
  "fast_chemail",
  "fnv",
  "futures-util",
@@ -1307,35 +1308,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kindling"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "async-graphql",
- "async-graphql-axum",
- "axum 0.8.8",
- "chrono",
- "clap",
- "colored",
- "dirs",
- "hostname",
- "prost",
- "prost-types",
- "reqwest",
- "semver",
- "serde",
- "serde_json",
- "serde_yaml",
- "tokio",
- "toml",
- "tonic",
- "tonic-build",
- "tower-http",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1632,6 +1604,36 @@ name = "pin-utils"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
+
+[[package]]
+name = "pleme-kindling"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "async-graphql",
+ "async-graphql-axum",
+ "axum 0.8.8",
+ "chrono",
+ "clap",
+ "colored",
+ "dirs",
+ "hostname",
+ "prost",
+ "prost-types",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "tokio",
+ "toml",
+ "tonic",
+ "tonic-build",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "polling"
