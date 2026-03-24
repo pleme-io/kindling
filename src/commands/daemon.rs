@@ -30,5 +30,5 @@ pub fn run(
 
     // Build tokio runtime explicitly (no #[tokio::main] on fn main)
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(crate::server::run(daemon_config))
+    runtime.block_on(crate::server::daemon::run(daemon_config))
 }

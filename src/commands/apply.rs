@@ -54,6 +54,15 @@ pub fn run(diff_only: bool) -> Result<()> {
     Ok(())
 }
 
+/// Run a full rebuild from a node.yaml path.
+///
+/// Shared entry point used by both `kindling apply` and `kindling server bootstrap`.
+pub fn run_rebuild_from_path(node_path: &std::path::Path) -> Result<()> {
+    let identity = node_identity::NodeIdentity::load(node_path)?;
+    let gen_dir = nix_gen::generate(&identity)?;
+    run_rebuild(&identity, &gen_dir)
+}
+
 fn run_rebuild(identity: &node_identity::NodeIdentity, gen_dir: &std::path::Path) -> Result<()> {
     let is_darwin = matches!(identity.profile.as_str(), "macos-developer");
     let flake_ref = format!("{}#{}", gen_dir.display(), identity.hostname);

@@ -198,6 +198,8 @@ pub struct NetworkConfig {
     pub ntp_servers: Vec<String>,
     #[serde(default)]
     pub vpn: Vec<VpnPeerConfig>,
+    #[serde(default)]
+    pub vpn_links: Vec<VpnLinkConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, SimpleObject)]
@@ -256,6 +258,45 @@ pub struct VpnPeerConfig {
     pub endpoint: Option<String>,
     #[serde(default)]
     pub allowed_ips: Vec<String>,
+    #[serde(default)]
+    pub persistent_keepalive: Option<u32>,
+    #[serde(default)]
+    pub preshared_key_file: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, SimpleObject)]
+pub struct VpnFirewallConfig {
+    #[serde(default)]
+    pub trust_interface: bool,
+    #[serde(default)]
+    pub allowed_tcp_ports: Vec<u32>,
+    #[serde(default)]
+    pub allowed_udp_ports: Vec<u32>,
+    #[serde(default)]
+    pub incoming_udp_port: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]
+pub struct VpnLinkConfig {
+    pub name: String,
+    #[serde(default)]
+    pub private_key_file: Option<String>,
+    #[serde(default)]
+    pub listen_port: Option<u32>,
+    #[serde(default)]
+    pub address: Option<String>,
+    #[serde(default)]
+    pub profile: Option<String>,
+    #[serde(default)]
+    pub persistent_keepalive: Option<u32>,
+    #[serde(default)]
+    pub mtu: Option<u32>,
+    #[serde(default)]
+    pub dns: Vec<String>,
+    #[serde(default)]
+    pub peers: Vec<VpnPeerConfig>,
+    #[serde(default)]
+    pub firewall: VpnFirewallConfig,
 }
 
 // ── Nix ────────────────────────────────────────────────────
@@ -481,12 +522,17 @@ fn remove_field_recursive(val: &mut serde_yaml::Value, parts: &[&str]) {
 }
 
 impl NodeIdentity {
-    /// Default path for node.yaml
+    /// Default path for node.yaml (workstation mode: `~/.config/kindling/node.yaml`)
     pub fn default_path() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("~/.config"))
             .join("kindling")
             .join("node.yaml")
+    }
+
+    /// Server-mode path for node.yaml (`/etc/kindling/node.yaml`)
+    pub fn server_path() -> PathBuf {
+        PathBuf::from("/etc/kindling/node.yaml")
     }
 
     /// Default overlay directory: `~/.config/kindling/identity.d/`

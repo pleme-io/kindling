@@ -8,4 +8,5 @@ pub mod install;
 pub mod profile;
 pub mod query;
 pub mod report;
+pub mod server;
 pub mod uninstall;

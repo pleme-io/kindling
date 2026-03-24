@@ -149,6 +149,12 @@ enum Commands {
         cached: bool,
     },
 
+    /// Server mode — K3s cluster bootstrap and monitoring
+    Server {
+        #[command(subcommand)]
+        command: ServerCommands,
+    },
+
     /// Query a kindling daemon's REST API
     Query {
         /// Target node name (from config nodes map; defaults to localhost)
@@ -173,6 +179,18 @@ enum ProfileCommands {
         /// Profile name
         name: String,
     },
+}
+
+#[derive(Subcommand)]
+enum ServerCommands {
+    /// Run the server bootstrap sequence (config → identity → rebuild → K3s → FluxCD)
+    Bootstrap {
+        /// Path to cluster-config.json (default: /etc/pangea/cluster-config.json)
+        #[arg(long, default_value = "/etc/pangea/cluster-config.json")]
+        config: String,
+    },
+    /// Show current server bootstrap status and health
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -240,6 +258,10 @@ fn main() -> anyhow::Result<()> {
         Commands::Fleet { command } => match command {
             FleetCommands::Status => commands::fleet::status(),
             FleetCommands::Apply { node } => commands::fleet::apply(&node),
+        },
+        Commands::Server { command } => match command {
+            ServerCommands::Bootstrap { config } => commands::server::run_bootstrap(&config),
+            ServerCommands::Status => commands::server::run_status(),
         },
         Commands::Report {
             format,

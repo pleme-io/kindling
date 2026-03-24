@@ -44,5 +44,7 @@
       homeManagerModules.default = import ./module {
         hmHelpers = import "${substrate}/lib/hm-service-helpers.nix" { lib = nixpkgs.lib; };
       };
+
+      nixosModules.default = import ./module/nixos.nix;
     };
 }

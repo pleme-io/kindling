@@ -9,6 +9,8 @@ use crate::domain::node_report::StoredReport;
 use crate::domain::node_service::NodeService;
 use crate::domain::types::*;
 use crate::node_identity::NodeIdentity;
+use crate::server::bootstrap::{BootstrapPhase, BootstrapState};
+use crate::server::health;
 
 /// Shared application state for all API handlers.
 #[derive(Clone)]
@@ -33,6 +35,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/identity", get(identity))
         .route("/api/v1/report", get(report))
         .route("/api/v1/report/refresh", post(refresh_report))
+        // Server mode endpoints
+        .route("/api/v1/server/status", get(server_status))
+        .route("/api/v1/server/health", get(server_health))
         .with_state(state)
 }
 
@@ -160,4 +165,34 @@ async fn refresh_report(
         .await
         .map(Json)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// Server bootstrap status (phase, cluster name, errors).
+async fn server_status() -> Json<BootstrapState> {
+    Json(BootstrapState::load_or_default(""))
+}
+
+/// Server live health: K3s node readiness + FluxCD reconciliation.
+async fn server_health() -> Result<Json<ServerHealthResponse>, (StatusCode, String)> {
+    let state = BootstrapState::load_or_default("");
+
+    if state.phase != BootstrapPhase::Complete {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("bootstrap not complete (phase: {})", state.phase),
+        ));
+    }
+
+    let k3s = health::check_k3s_health()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let fluxcd = health::check_fluxcd_health()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(ServerHealthResponse { k3s, fluxcd }))
+}
+
+#[derive(serde::Serialize)]
+struct ServerHealthResponse {
+    k3s: health::K3sHealthStatus,
+    fluxcd: health::FluxcdHealthStatus,
 }
