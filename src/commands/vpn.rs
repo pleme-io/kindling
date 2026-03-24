@@ -29,8 +29,8 @@ pub fn run_profiles() -> Result<()> {
 }
 
 /// Generate WireGuard keys for a new VPN link.
-pub fn run_keygen(link: &str, side_a: &str, side_b: &str, profile: &str) -> Result<()> {
-    keygen::run(link, side_a, side_b, profile)
+pub fn run_keygen(link: &str, side_a: &str, side_b: &str, profile: &str, output: &str) -> Result<()> {
+    keygen::run(link, side_a, side_b, profile, output)
 }
 
 /// Validate VPN configuration from a cluster-config.json file.

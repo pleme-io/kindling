@@ -1,7 +1,8 @@
 //! Pure-Rust WireGuard key generation using x25519-dalek.
 //!
 //! Generates private keys, public keys, and pre-shared keys without shelling
-//! out to `wg genkey`. Output is structured YAML with SOPS paths.
+//! out to `wg genkey`. Output is structured YAML with SOPS paths, or
+//! machine-readable JSON when `--output json` is used.
 
 use anyhow::Result;
 use base64::Engine;
@@ -13,6 +14,32 @@ use super::validate::VALID_VPN_PROFILES;
 pub struct KeyPair {
     pub private_key: String,
     pub public_key: String,
+}
+
+/// Machine-readable keygen output (top-level).
+#[derive(serde::Serialize)]
+pub struct KeygenOutput {
+    pub link: String,
+    pub side_a: SideOutput,
+    pub side_b: SideOutput,
+    pub psk: String,
+    pub sops_paths: SopsPathsOutput,
+}
+
+/// One side of a VPN link (node name + key pair).
+#[derive(serde::Serialize)]
+pub struct SideOutput {
+    pub node: String,
+    pub private_key: String,
+    pub public_key: String,
+}
+
+/// SOPS secret paths for the generated keys.
+#[derive(serde::Serialize)]
+pub struct SopsPathsOutput {
+    pub side_a_private_key: String,
+    pub side_a_psk: String,
+    pub side_b_private_key: String,
 }
 
 /// Generate a WireGuard key pair (Curve25519).
@@ -91,9 +118,12 @@ fn hints_for_profile(profile: &str) -> ProfileHints {
     }
 }
 
-/// Generate all keys for a VPN link and print structured YAML output.
-pub fn run(link: &str, side_a: &str, side_b: &str, profile: &str) -> Result<()> {
-    // Validate profile
+/// Generate all keys for a VPN link and return a structured [`KeygenOutput`].
+///
+/// Validates the profile, generates two key pairs and a PSK, then assembles
+/// the output struct. Does **not** print anything — the caller decides the
+/// output format.
+pub fn generate(link: &str, side_a: &str, side_b: &str, profile: &str) -> Result<KeygenOutput> {
     if !VALID_VPN_PROFILES.contains(&profile) {
         anyhow::bail!(
             "Unknown profile '{}'. Valid profiles: {:?}",
@@ -106,58 +136,95 @@ pub fn run(link: &str, side_a: &str, side_b: &str, profile: &str) -> Result<()> 
     let kp_b = generate_keypair();
     let psk = generate_psk();
     let paths = sops_paths(link, side_a);
+
+    Ok(KeygenOutput {
+        link: link.to_owned(),
+        side_a: SideOutput {
+            node: side_a.to_owned(),
+            private_key: kp_a.private_key,
+            public_key: kp_a.public_key,
+        },
+        side_b: SideOutput {
+            node: side_b.to_owned(),
+            private_key: kp_b.private_key,
+            public_key: kp_b.public_key,
+        },
+        psk,
+        sops_paths: SopsPathsOutput {
+            side_a_private_key: paths.side_a_private_key,
+            side_a_psk: paths.side_a_psk,
+            side_b_private_key: paths.side_b_private_key,
+        },
+    })
+}
+
+/// Generate all keys for a VPN link and print output.
+///
+/// When `output_format` is `"json"` the output is machine-readable JSON.
+/// Any other value (including the default `"text"`) produces the original
+/// human-readable YAML-ish output with inline Nix template hints.
+pub fn run(link: &str, side_a: &str, side_b: &str, profile: &str, output_format: &str) -> Result<()> {
+    let output = generate(link, side_a, side_b, profile)?;
+
+    if output_format == "json" {
+        let json = serde_json::to_string_pretty(&output)?;
+        println!("{}", json);
+        return Ok(());
+    }
+
+    // Human-readable text output (original format).
     let hints = hints_for_profile(profile);
 
-    println!("# VPN keygen for link: {}", link);
-    println!("# Side A: {} | Side B: {}", side_a, side_b);
+    println!("# VPN keygen for link: {}", output.link);
+    println!("# Side A: {} | Side B: {}", output.side_a.node, output.side_b.node);
     println!("{}", hints.comment);
     println!("#");
     println!("# Insert these values into SOPS secrets.yaml:");
     println!("#   cd ~/code/github/pleme-io/nix && sops secrets.yaml");
     println!();
     println!("side_a:");
-    println!("  node: {}", side_a);
-    println!("  private_key: {}", kp_a.private_key);
-    println!("  public_key: {}", kp_a.public_key);
+    println!("  node: {}", output.side_a.node);
+    println!("  private_key: {}", output.side_a.private_key);
+    println!("  public_key: {}", output.side_a.public_key);
     println!("  sops_paths:");
-    println!("    private_key: \"{}\"", paths.side_a_private_key);
-    println!("    psk: \"{}\"", paths.side_a_psk);
+    println!("    private_key: \"{}\"", output.sops_paths.side_a_private_key);
+    println!("    psk: \"{}\"", output.sops_paths.side_a_psk);
     println!();
     println!("side_b:");
-    println!("  node: {}", side_b);
-    println!("  private_key: {}", kp_b.private_key);
-    println!("  public_key: {}", kp_b.public_key);
+    println!("  node: {}", output.side_b.node);
+    println!("  private_key: {}", output.side_b.private_key);
+    println!("  public_key: {}", output.side_b.public_key);
     println!("  sops_paths:");
-    println!("    private_key: \"{}\"", paths.side_b_private_key);
+    println!("    private_key: \"{}\"", output.sops_paths.side_b_private_key);
     println!();
-    println!("psk: {}", psk);
+    println!("psk: {}", output.psk);
     println!();
     println!("# vpn-links.nix entry:");
-    println!("  {} = {{", link);
-    println!("    interface = \"wg-{}\";", link);
+    println!("  {} = {{", output.link);
+    println!("    interface = \"wg-{}\";", output.link);
     println!("    subnet = \"10.100.X.0/24\";  # pick next available");
     println!("    profile = \"{}\";", profile);
     println!("    mtu = {};", hints.mtu);
     println!("{}", hints.keepalive);
     println!("    a = {{");
-    println!("      node = \"{}\";", side_a);
+    println!("      node = \"{}\";", output.side_a.node);
     println!("      address = \"10.100.X.1/24\";");
-    println!("      publicKey = \"{}\";", kp_a.public_key);
+    println!("      publicKey = \"{}\";", output.side_a.public_key);
     println!(
         "      secrets.privateKey = \"{}\";",
-        paths.side_a_private_key
+        output.sops_paths.side_a_private_key
     );
-    println!("      secrets.psk = \"{}\";", paths.side_a_psk);
+    println!("      secrets.psk = \"{}\";", output.sops_paths.side_a_psk);
     println!("    }};");
     println!("    b = {{");
-    println!("      node = \"{}\";", side_b);
+    println!("      node = \"{}\";", output.side_b.node);
     println!("      address = \"10.100.X.2/24\";");
     println!("      listenPort = 518XX;");
     println!("      endpoint = \"<IP>:518XX\";");
-    println!("      publicKey = \"{}\";", kp_b.public_key);
+    println!("      publicKey = \"{}\";", output.side_b.public_key);
     println!(
         "      secrets.privateKey = \"{}\";",
-        paths.side_b_private_key
+        output.sops_paths.side_b_private_key
     );
     println!("    }};");
     println!("  }};");
@@ -226,14 +293,41 @@ mod tests {
 
     #[test]
     fn run_rejects_invalid_profile() {
-        let err = run("test", "a", "b", "invalid-profile").unwrap_err();
+        let err = run("test", "a", "b", "invalid-profile", "text").unwrap_err();
         assert!(err.to_string().contains("Unknown profile"));
     }
 
     #[test]
     fn run_succeeds_with_valid_profiles() {
         for profile in VALID_VPN_PROFILES {
-            assert!(run("test", "nodeA", "nodeB", profile).is_ok());
+            assert!(run("test", "nodeA", "nodeB", profile, "text").is_ok());
         }
+    }
+
+    #[test]
+    fn generate_returns_structured_output() {
+        let out = generate("ryn-k3s", "ryn", "k3s-vm", "k8s-control-plane").unwrap();
+        assert_eq!(out.link, "ryn-k3s");
+        assert_eq!(out.side_a.node, "ryn");
+        assert_eq!(out.side_b.node, "k3s-vm");
+        assert!(!out.psk.is_empty());
+        assert_eq!(
+            out.sops_paths.side_a_private_key,
+            "ryn/wireguard/ryn-k3s/private-key"
+        );
+    }
+
+    #[test]
+    fn json_output_is_valid() {
+        let out = generate("test-link", "nodeA", "nodeB", "k8s-control-plane").unwrap();
+        let json = serde_json::to_string_pretty(&out).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["link"], "test-link");
+        assert_eq!(parsed["side_a"]["node"], "nodeA");
+        assert_eq!(parsed["side_b"]["node"], "nodeB");
+        assert!(parsed["psk"].as_str().is_some());
+        assert!(parsed["sops_paths"]["side_a_private_key"].as_str().is_some());
+        assert!(parsed["sops_paths"]["side_a_psk"].as_str().is_some());
+        assert!(parsed["sops_paths"]["side_b_private_key"].as_str().is_some());
     }
 }

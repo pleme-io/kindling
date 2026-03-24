@@ -219,6 +219,10 @@ enum VpnCommands {
         /// VPN profile (k8s-control-plane, k8s-full, site-to-site, mesh)
         #[arg(long, default_value = "k8s-control-plane")]
         profile: String,
+
+        /// Output format (text or json)
+        #[arg(long, default_value = "text")]
+        output: String,
     },
     /// List available VPN profiles and their firewall configurations
     Profiles,
@@ -307,7 +311,8 @@ fn main() -> anyhow::Result<()> {
                 side_a,
                 side_b,
                 profile,
-            } => commands::vpn::run_keygen(&link, &side_a, &side_b, &profile),
+                output,
+            } => commands::vpn::run_keygen(&link, &side_a, &side_b, &profile, &output),
             VpnCommands::Validate {
                 config,
                 check_files,
