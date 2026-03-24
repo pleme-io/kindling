@@ -1796,6 +1796,92 @@ rec {
         };
         resolvedDefaultFeatures = [ "std" ];
       };
+      "curve25519-dalek" = rec {
+        crateName = "curve25519-dalek";
+        version = "4.1.3";
+        edition = "2021";
+        sha256 = "1gmjb9dsknrr8lypmhkyjd67p1arb8mbfamlwxm7vph38my8pywp";
+        libName = "curve25519_dalek";
+        authors = [
+          "Isis Lovecruft <isis@patternsinthevoid.net>"
+          "Henry de Valence <hdevalence@hdevalence.ca>"
+        ];
+        dependencies = [
+          {
+            name = "cfg-if";
+            packageId = "cfg-if";
+          }
+          {
+            name = "cpufeatures";
+            packageId = "cpufeatures";
+            target = { target, features }: ("x86_64" == target."arch" or null);
+          }
+          {
+            name = "curve25519-dalek-derive";
+            packageId = "curve25519-dalek-derive";
+            target = { target, features }: ((!("fiat" == target."curve25519_dalek_backend" or null)) && (!("serial" == target."curve25519_dalek_backend" or null)) && ("x86_64" == target."arch" or null));
+          }
+          {
+            name = "fiat-crypto";
+            packageId = "fiat-crypto";
+            usesDefaultFeatures = false;
+            target = { target, features }: ("fiat" == target."curve25519_dalek_backend" or null);
+          }
+          {
+            name = "subtle";
+            packageId = "subtle";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "zeroize";
+            packageId = "zeroize";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "rustc_version";
+            packageId = "rustc_version";
+          }
+        ];
+        features = {
+          "alloc" = [ "zeroize?/alloc" ];
+          "default" = [ "alloc" "precomputed-tables" "zeroize" ];
+          "digest" = [ "dep:digest" ];
+          "ff" = [ "dep:ff" ];
+          "group" = [ "dep:group" "rand_core" ];
+          "group-bits" = [ "group" "ff/bits" ];
+          "rand_core" = [ "dep:rand_core" ];
+          "serde" = [ "dep:serde" ];
+          "zeroize" = [ "dep:zeroize" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" "precomputed-tables" "zeroize" ];
+      };
+      "curve25519-dalek-derive" = rec {
+        crateName = "curve25519-dalek-derive";
+        version = "0.1.1";
+        edition = "2021";
+        sha256 = "1cry71xxrr0mcy5my3fb502cwfxy6822k4pm19cwrilrg7hq4s7l";
+        procMacro = true;
+        libName = "curve25519_dalek_derive";
+        dependencies = [
+          {
+            name = "proc-macro2";
+            packageId = "proc-macro2";
+          }
+          {
+            name = "quote";
+            packageId = "quote";
+          }
+          {
+            name = "syn";
+            packageId = "syn";
+            features = [ "full" ];
+          }
+        ];
+
+      };
       "darling 0.20.11" = rec {
         crateName = "darling";
         version = "0.20.11";
@@ -2310,6 +2396,19 @@ rec {
           "std" = [ "alloc" ];
         };
         resolvedDefaultFeatures = [ "alloc" "default" "std" ];
+      };
+      "fiat-crypto" = rec {
+        crateName = "fiat-crypto";
+        version = "0.2.9";
+        edition = "2018";
+        sha256 = "07c1vknddv3ak7w89n85ik0g34nzzpms6yb845vrjnv9m4csbpi8";
+        libName = "fiat_crypto";
+        authors = [
+          "Fiat Crypto library authors <jgross@mit.edu>"
+        ];
+        features = {
+          "default" = [ "std" ];
+        };
       };
       "figment" = rec {
         crateName = "figment";
@@ -5250,6 +5349,10 @@ rec {
             features = [ "json" ];
           }
           {
+            name = "base64";
+            packageId = "base64";
+          }
+          {
             name = "chrono";
             packageId = "chrono";
             features = [ "serde" ];
@@ -5285,6 +5388,10 @@ rec {
             name = "prost-types";
             packageId = "prost-types";
             optional = true;
+          }
+          {
+            name = "rand";
+            packageId = "rand 0.9.2";
           }
           {
             name = "reqwest";
@@ -5339,12 +5446,23 @@ rec {
             packageId = "tracing-subscriber";
             features = [ "env-filter" "json" ];
           }
+          {
+            name = "x25519-dalek";
+            packageId = "x25519-dalek";
+            features = [ "static_secrets" ];
+          }
         ];
         buildDependencies = [
           {
             name = "tonic-build";
             packageId = "tonic-build";
             optional = true;
+          }
+        ];
+        devDependencies = [
+          {
+            name = "tempfile";
+            packageId = "tempfile";
           }
         ];
         features = {
@@ -6737,6 +6855,19 @@ rec {
           "rand" = [ "dep:rand" "std" ];
         };
         resolvedDefaultFeatures = [ "default" "std" ];
+      };
+      "rustc_version" = rec {
+        crateName = "rustc_version";
+        version = "0.4.1";
+        edition = "2018";
+        sha256 = "14lvdsmr5si5qbqzrajgb6vfn69k0sfygrvfvr2mps26xwi3mjyg";
+        dependencies = [
+          {
+            name = "semver";
+            packageId = "semver";
+          }
+        ];
+
       };
       "rustix" = rec {
         crateName = "rustix";
@@ -12161,6 +12292,61 @@ rec {
           "either" = [ "dep:either" ];
         };
       };
+      "x25519-dalek" = rec {
+        crateName = "x25519-dalek";
+        version = "2.0.1";
+        edition = "2021";
+        sha256 = "0xyjgqpsa0q6pprakdp58q1hy45rf8wnqqscgzx0gyw13hr6ir67";
+        libName = "x25519_dalek";
+        authors = [
+          "Isis Lovecruft <isis@patternsinthevoid.net>"
+          "DebugSteven <debugsteven@gmail.com>"
+          "Henry de Valence <hdevalence@hdevalence.ca>"
+        ];
+        dependencies = [
+          {
+            name = "curve25519-dalek";
+            packageId = "curve25519-dalek";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "rand_core";
+            packageId = "rand_core 0.6.4";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "serde";
+            packageId = "serde";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "derive" ];
+          }
+          {
+            name = "zeroize";
+            packageId = "zeroize";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "zeroize_derive" ];
+          }
+        ];
+        devDependencies = [
+          {
+            name = "rand_core";
+            packageId = "rand_core 0.6.4";
+            usesDefaultFeatures = false;
+            features = [ "getrandom" ];
+          }
+        ];
+        features = {
+          "alloc" = [ "curve25519-dalek/alloc" "serde?/alloc" "zeroize?/alloc" ];
+          "default" = [ "alloc" "precomputed-tables" "zeroize" ];
+          "getrandom" = [ "rand_core/getrandom" ];
+          "precomputed-tables" = [ "curve25519-dalek/precomputed-tables" ];
+          "serde" = [ "dep:serde" "curve25519-dalek/serde" ];
+          "zeroize" = [ "dep:zeroize" "curve25519-dalek/zeroize" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" "default" "precomputed-tables" "static_secrets" "zeroize" ];
+      };
       "yansi" = rec {
         crateName = "yansi";
         version = "1.0.1";
@@ -12377,6 +12563,13 @@ rec {
         authors = [
           "The RustCrypto Project Developers"
         ];
+        dependencies = [
+          {
+            name = "zeroize_derive";
+            packageId = "zeroize_derive";
+            optional = true;
+          }
+        ];
         features = {
           "default" = [ "alloc" ];
           "derive" = [ "zeroize_derive" ];
@@ -12384,7 +12577,33 @@ rec {
           "std" = [ "alloc" ];
           "zeroize_derive" = [ "dep:zeroize_derive" ];
         };
-        resolvedDefaultFeatures = [ "alloc" "default" ];
+        resolvedDefaultFeatures = [ "alloc" "default" "zeroize_derive" ];
+      };
+      "zeroize_derive" = rec {
+        crateName = "zeroize_derive";
+        version = "1.4.3";
+        edition = "2021";
+        sha256 = "0bl5vd1lz27p4z336nximg5wrlw5j7jc8fxh7iv6r1wrhhav99c5";
+        procMacro = true;
+        authors = [
+          "The RustCrypto Project Developers"
+        ];
+        dependencies = [
+          {
+            name = "proc-macro2";
+            packageId = "proc-macro2";
+          }
+          {
+            name = "quote";
+            packageId = "quote";
+          }
+          {
+            name = "syn";
+            packageId = "syn";
+            features = [ "full" "extra-traits" "visit" ];
+          }
+        ];
+
       };
       "zerotrie" = rec {
         crateName = "zerotrie";
