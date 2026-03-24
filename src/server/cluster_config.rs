@@ -3,7 +3,7 @@
 //! The JSON is written by cloud-init at boot time and contains everything needed
 //! to configure a K3s or vanilla Kubernetes node via blackmatter-kubernetes modules.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -172,75 +172,7 @@ fn default_role() -> String {
     "server".to_string()
 }
 
-/// Known VPN profiles and their allowed firewall configurations.
-/// Used by `validate_vpn_security` to enforce least-privilege.
-///
-/// CANONICAL SOURCE: blackmatter-vpn lib/profiles.nix
-/// Also validated in pangea-kubernetes types/vpn_config.rb (VALID_VPN_PROFILES).
-/// Keep all three in sync.
-const VALID_VPN_PROFILES: &[&str] = &[
-    "k8s-control-plane",
-    "k8s-full",
-    "site-to-site",
-    "mesh",
-];
-
-/// Validate that a string is a valid CIDR notation (IPv4 or IPv6).
-fn validate_cidr(cidr: &str) -> bool {
-    let parts: Vec<&str> = cidr.splitn(2, '/').collect();
-    if parts.len() != 2 {
-        return false;
-    }
-    let ip_str = parts[0];
-    let prefix_str = parts[1];
-
-    let ip: std::net::IpAddr = match ip_str.parse() {
-        Ok(ip) => ip,
-        Err(_) => return false,
-    };
-
-    let prefix: u8 = match prefix_str.parse() {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-
-    match ip {
-        std::net::IpAddr::V4(_) => prefix <= 32,
-        std::net::IpAddr::V6(_) => prefix <= 128,
-    }
-}
-
-/// Validate that a string is a valid endpoint (host:port).
-fn validate_endpoint(endpoint: &str) -> bool {
-    // Handle IPv6 endpoints like [::1]:51820
-    if let Some(bracket_end) = endpoint.find("]:") {
-        let port_str = &endpoint[bracket_end + 2..];
-        let host = &endpoint[..bracket_end + 1];
-        if host.len() < 3 {
-            return false;
-        } // minimum: [x]
-        match port_str.parse::<u16>() {
-            Ok(p) => p >= 1,
-            Err(_) => false,
-        }
-    } else {
-        // IPv4 or hostname: last colon separates host from port
-        match endpoint.rfind(':') {
-            Some(pos) => {
-                let host = &endpoint[..pos];
-                let port_str = &endpoint[pos + 1..];
-                if host.is_empty() {
-                    return false;
-                }
-                match port_str.parse::<u16>() {
-                    Ok(p) => p >= 1,
-                    Err(_) => false,
-                }
-            }
-            None => false,
-        }
-    }
-}
+use crate::vpn::validate as vpn_validate;
 
 impl ClusterConfig {
     /// Load from a JSON file on disk.
@@ -260,34 +192,8 @@ impl ClusterConfig {
         format!("{}-{}-{}", self.cluster_name, self.role, self.node_index)
     }
 
-    /// Validate VPN security invariants. Returns Err if any invariant is violated.
-    ///
-    /// This is called during bootstrap BEFORE writing the node identity or running
-    /// nixos-rebuild. If validation fails, the node does NOT come up — cloud-init
-    /// phase errors completely. This is intentional: a misconfigured VPN is worse
-    /// than no VPN at all.
-    ///
-    /// Invariants enforced (least privilege, defense in depth):
-    ///
-    /// 1. Every link MUST have a private_key_file (no cleartext keys, no missing keys)
-    /// 2. Every link MUST have an address (interface must be bound)
-    /// 3. Every link MUST have at least one peer (a link with no peers is useless/suspicious)
-    /// 4. Every peer MUST have a public_key (identity required)
-    /// 5. Every peer MUST have at least one allowed_ips entry (routes must be explicit)
-    /// 6. No peer may have 0.0.0.0/0 in allowed_ips (no full tunnel — split tunnel only)
-    /// 7. No peer may have ::/0 in allowed_ips (same for IPv6)
-    /// 8. Every peer MUST have a preshared_key_file (post-quantum resistance mandatory)
-    /// 9. Firewall MUST be present on every link (explicit firewall config required)
-    /// 10. trust_interface MUST be false for k8s profiles (defense in depth)
-    /// 11. k8s profiles MUST have explicit port allowlists (no implicit "allow all")
-    /// 12. Link names must be valid interface names (alphanumeric + dash, max 15 chars)
-    /// 13. Profiles must be from the known set (reject typos/unknown profiles)
-    /// 14. Server-role nodes with listen_port MUST have incoming_udp_port set in firewall
-    /// 15. Key files (private_key_file, preshared_key_file) must exist on disk at boot
-    /// 16. Key files must have restrictive permissions (not world-readable)
-    ///
-    /// Use `validate_vpn_security()` for structural checks (during config parsing).
-    /// Use `validate_vpn_security_full()` for structural + filesystem checks (during bootstrap).
+    /// Validate VPN security invariants (structural checks only).
+    /// Delegates to shared `vpn::validate` module.
     pub fn validate_vpn_security(&self) -> Result<()> {
         self.validate_vpn_security_inner(false)
     }
@@ -301,296 +207,40 @@ impl ClusterConfig {
     fn validate_vpn_security_inner(&self, check_files: bool) -> Result<()> {
         let vpn = match &self.vpn {
             Some(v) => v,
-            None => return Ok(()), // No VPN configured — nothing to validate
+            None => return Ok(()),
         };
 
-        if vpn.links.is_empty() {
-            return Ok(()); // Empty links array is fine (VPN section present but no links)
-        }
+        let links: Vec<vpn_validate::VpnLink<'_>> = vpn
+            .links
+            .iter()
+            .map(|l| vpn_validate::VpnLink {
+                name: &l.name,
+                private_key_file: l.private_key_file.as_deref(),
+                listen_port: l.listen_port,
+                address: l.address.as_deref(),
+                profile: l.profile.as_deref(),
+                persistent_keepalive: l.persistent_keepalive,
+                peers: l
+                    .peers
+                    .iter()
+                    .map(|p| vpn_validate::VpnPeer {
+                        public_key: p.public_key.as_deref(),
+                        endpoint: p.endpoint.as_deref(),
+                        allowed_ips: &p.allowed_ips,
+                        persistent_keepalive: p.persistent_keepalive,
+                        preshared_key_file: p.preshared_key_file.as_deref(),
+                    })
+                    .collect(),
+                firewall: l.firewall.as_ref().map(|fw| vpn_validate::VpnFirewall {
+                    trust_interface: fw.trust_interface,
+                    allowed_tcp_ports: &fw.allowed_tcp_ports,
+                    allowed_udp_ports: &fw.allowed_udp_ports,
+                    incoming_udp_port: fw.incoming_udp_port,
+                }),
+            })
+            .collect();
 
-        let mut errors: Vec<String> = Vec::new();
-
-        for (i, link) in vpn.links.iter().enumerate() {
-            let ctx = format!("vpn.links[{}] ({})", i, link.name);
-
-            // 12. Interface name validation
-            if link.name.is_empty() {
-                errors.push(format!("{}: name must not be empty", ctx));
-            } else if link.name.len() > 15 {
-                errors.push(format!("{}: name exceeds 15 chars (Linux interface name limit)", ctx));
-            } else if !link.name.chars().all(|c| c.is_alphanumeric() || c == '-') {
-                errors.push(format!("{}: name contains invalid characters (only alphanumeric and dash allowed)", ctx));
-            }
-
-            // 1. Private key file mandatory
-            if link.private_key_file.is_none() {
-                errors.push(format!("{}: private_key_file is required (no cleartext keys)", ctx));
-            }
-
-            // 2. Address mandatory
-            if link.address.is_none() {
-                errors.push(format!("{}: address is required (interface must be bound)", ctx));
-            }
-
-            // NEW: Address CIDR syntax validation
-            if let Some(ref addr) = link.address {
-                if !validate_cidr(addr) {
-                    errors.push(format!(
-                        "{}: address '{}' is not a valid CIDR (expected format: IP/prefix)",
-                        ctx, addr
-                    ));
-                }
-            }
-
-            // 3. At least one peer
-            if link.peers.is_empty() {
-                errors.push(format!("{}: at least one peer is required", ctx));
-            }
-
-            // 13. Profile validation
-            if let Some(ref profile) = link.profile {
-                if !VALID_VPN_PROFILES.contains(&profile.as_str()) {
-                    errors.push(format!(
-                        "{}: unknown profile '{}' (valid: {:?})",
-                        ctx, profile, VALID_VPN_PROFILES
-                    ));
-                }
-            }
-
-            // 9. Firewall mandatory
-            let firewall = match &link.firewall {
-                Some(fw) => Some(fw),
-                None => {
-                    errors.push(format!(
-                        "{}: firewall config is required (explicit firewall rules mandatory)",
-                        ctx
-                    ));
-                    None
-                }
-            };
-
-            // 10 + 11. Profile-specific firewall enforcement
-            let is_k8s_profile = link.profile.as_deref().map_or(false, |p| p.starts_with("k8s-"));
-            if is_k8s_profile {
-                if let Some(fw) = firewall {
-                    if fw.trust_interface {
-                        errors.push(format!(
-                            "{}: trust_interface must be false for k8s profiles (defense in depth)",
-                            ctx
-                        ));
-                    }
-                    if fw.allowed_tcp_ports.is_empty() && fw.allowed_udp_ports.is_empty() {
-                        errors.push(format!(
-                            "{}: k8s profile requires explicit port allowlist in firewall",
-                            ctx
-                        ));
-                    }
-                }
-            }
-
-            // 14. Server listen port firewall consistency
-            if let Some(port) = link.listen_port {
-                if port > 0 {
-                    if let Some(fw) = firewall {
-                        if fw.incoming_udp_port.is_none() {
-                            errors.push(format!(
-                                "{}: listen_port {} set but firewall.incoming_udp_port not set \
-                                 (firewall must explicitly allow the listen port)",
-                                ctx, port
-                            ));
-                        }
-                    }
-                }
-            }
-
-            // NEW: Listen port range validation
-            if let Some(port) = link.listen_port {
-                if port != 0 && (port < 1024 || port > 65535) {
-                    errors.push(format!(
-                        "{}: listen_port {} is outside valid range (must be 0 for random, or 1024-65535)",
-                        ctx, port
-                    ));
-                }
-            }
-
-            // NEW: Persistent keepalive range validation (link-level)
-            if let Some(ka) = link.persistent_keepalive {
-                if ka > 65535 {
-                    errors.push(format!(
-                        "{}: persistent_keepalive {} exceeds maximum (0-65535)",
-                        ctx, ka
-                    ));
-                }
-            }
-
-            // Per-peer validation
-            for (j, peer) in link.peers.iter().enumerate() {
-                let pctx = format!("{}.peers[{}]", ctx, j);
-
-                // 4. Public key mandatory
-                if peer.public_key.is_none() {
-                    errors.push(format!("{}: public_key is required", pctx));
-                }
-
-                // 5. Allowed IPs mandatory
-                if peer.allowed_ips.is_empty() {
-                    errors.push(format!("{}: allowed_ips must not be empty (routes must be explicit)", pctx));
-                }
-
-                // 6 + 7. No full tunnel (0.0.0.0/0 or ::/0)
-                for ip in &peer.allowed_ips {
-                    let normalized = ip.trim();
-                    if normalized == "0.0.0.0/0" || normalized == "::/0" {
-                        errors.push(format!(
-                            "{}: allowed_ips contains '{}' (full tunnel forbidden — use split tunnel with scoped CIDRs)",
-                            pctx, normalized
-                        ));
-                    }
-                }
-
-                // NEW: Validate each allowed_ips entry is valid CIDR
-                for ip in &peer.allowed_ips {
-                    let trimmed = ip.trim();
-                    if trimmed != "0.0.0.0/0" && trimmed != "::/0" && !validate_cidr(trimmed) {
-                        errors.push(format!(
-                            "{}: allowed_ips entry '{}' is not a valid CIDR",
-                            pctx, trimmed
-                        ));
-                    }
-                }
-
-                // NEW: Validate endpoint format
-                if let Some(ref ep) = peer.endpoint {
-                    if !validate_endpoint(ep) {
-                        errors.push(format!(
-                            "{}: endpoint '{}' is not valid (expected host:port with port 1-65535)",
-                            pctx, ep
-                        ));
-                    }
-                }
-
-                // NEW: Per-peer keepalive range
-                if let Some(ka) = peer.persistent_keepalive {
-                    if ka > 65535 {
-                        errors.push(format!(
-                            "{}: persistent_keepalive {} exceeds maximum (0-65535)",
-                            pctx, ka
-                        ));
-                    }
-                }
-
-                // 8. Pre-shared key mandatory
-                if peer.preshared_key_file.is_none() {
-                    errors.push(format!(
-                        "{}: preshared_key_file is required (post-quantum resistance mandatory)",
-                        pctx
-                    ));
-                }
-
-                // 15+16. PSK file existence and permissions (only during bootstrap)
-                if check_files {
-                    if let Some(ref psk_path) = peer.preshared_key_file {
-                        Self::validate_key_file(&mut errors, &pctx, "preshared_key_file", psk_path);
-                    }
-                }
-            }
-
-            // 15+16. Private key file existence and permissions (only during bootstrap)
-            if check_files {
-                if let Some(ref key_path) = link.private_key_file {
-                    Self::validate_key_file(&mut errors, &ctx, "private_key_file", key_path);
-                }
-            }
-        }
-
-        // NEW: Cross-link collision detection
-        {
-            use std::collections::HashSet;
-
-            // Duplicate link names
-            let mut seen_names: HashSet<&str> = HashSet::new();
-            for link in &vpn.links {
-                if !seen_names.insert(&link.name) {
-                    errors.push(format!("vpn: duplicate link name '{}'", link.name));
-                }
-            }
-
-            // Duplicate listen ports (only non-zero)
-            let mut seen_ports: HashSet<u32> = HashSet::new();
-            for link in &vpn.links {
-                if let Some(port) = link.listen_port {
-                    if port > 0 && !seen_ports.insert(port) {
-                        errors.push(format!(
-                            "vpn: duplicate listen_port {} (link '{}')",
-                            port, link.name
-                        ));
-                    }
-                }
-            }
-
-            // Duplicate addresses
-            let mut seen_addrs: HashSet<&str> = HashSet::new();
-            for link in &vpn.links {
-                if let Some(ref addr) = link.address {
-                    if !seen_addrs.insert(addr) {
-                        errors.push(format!(
-                            "vpn: duplicate address '{}' (link '{}')",
-                            addr, link.name
-                        ));
-                    }
-                }
-            }
-
-            // Per-link: duplicate peer public keys
-            for link in &vpn.links {
-                let mut seen_keys: HashSet<&str> = HashSet::new();
-                for peer in &link.peers {
-                    if let Some(ref key) = peer.public_key {
-                        if !seen_keys.insert(key) {
-                            errors.push(format!(
-                                "vpn.links ({}).peers: duplicate public_key '{}'",
-                                link.name, key
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            let msg = format!(
-                "VPN security validation failed — node will NOT bootstrap.\n\
-                 {} violation(s) detected:\n  - {}",
-                errors.len(),
-                errors.join("\n  - ")
-            );
-            bail!(msg)
-        }
-    }
-
-    /// Validate a key file exists on disk and has secure permissions.
-    fn validate_key_file(errors: &mut Vec<String>, ctx: &str, field: &str, path: &str) {
-        let p = Path::new(path);
-        if !p.exists() {
-            errors.push(format!("{}: {} '{}' does not exist on disk", ctx, field, path));
-            return;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(meta) = std::fs::metadata(p) {
-                let mode = meta.permissions().mode() & 0o777;
-                if mode & 0o077 != 0 {
-                    errors.push(format!(
-                        "{}: {} '{}' has insecure permissions {:o} \
-                         (must not be group/world-readable, expected 0400 or 0600)",
-                        ctx, field, path, mode
-                    ));
-                }
-            }
-        }
+        vpn_validate::validate_vpn_links(&links, check_files)
     }
 
     /// Convert to a NodeIdentity suitable for kindling's NixOS rebuild.
@@ -681,6 +331,7 @@ impl ClusterConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vpn::validate::{validate_cidr, validate_endpoint};
 
     const MINIMAL_JSON: &str = r#"{
         "cluster_name": "prod-us-east",

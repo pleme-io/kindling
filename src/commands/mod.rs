@@ -10,3 +10,4 @@ pub mod query;
 pub mod report;
 pub mod server;
 pub mod uninstall;
+pub mod vpn;

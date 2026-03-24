@@ -13,6 +13,7 @@ mod server;
 mod telemetry;
 mod tend_setup;
 mod tools;
+mod vpn;
 
 use clap::{Parser, Subcommand};
 
@@ -155,6 +156,12 @@ enum Commands {
         command: ServerCommands,
     },
 
+    /// VPN key management and validation
+    Vpn {
+        #[command(subcommand)]
+        command: VpnCommands,
+    },
+
     /// Query a kindling daemon's REST API
     Query {
         /// Target node name (from config nodes map; defaults to localhost)
@@ -191,6 +198,40 @@ enum ServerCommands {
     },
     /// Show current server bootstrap status and health
     Status,
+}
+
+#[derive(Subcommand)]
+enum VpnCommands {
+    /// Generate WireGuard keys for a new VPN link
+    Keygen {
+        /// Link name (e.g., ryn-k3s)
+        #[arg(long)]
+        link: String,
+
+        /// Side A node name (initiator, typically macOS host)
+        #[arg(long)]
+        side_a: String,
+
+        /// Side B node name (responder, typically VM/server)
+        #[arg(long)]
+        side_b: String,
+
+        /// VPN profile (k8s-control-plane, k8s-full, site-to-site, mesh)
+        #[arg(long, default_value = "k8s-control-plane")]
+        profile: String,
+    },
+    /// List available VPN profiles and their firewall configurations
+    Profiles,
+    /// Validate VPN configuration from a cluster-config.json
+    Validate {
+        /// Path to cluster-config.json
+        #[arg(long, default_value = "/etc/pangea/cluster-config.json")]
+        config: String,
+
+        /// Also check key files exist on disk with correct permissions
+        #[arg(long)]
+        check_files: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -258,6 +299,19 @@ fn main() -> anyhow::Result<()> {
         Commands::Fleet { command } => match command {
             FleetCommands::Status => commands::fleet::status(),
             FleetCommands::Apply { node } => commands::fleet::apply(&node),
+        },
+        Commands::Vpn { command } => match command {
+            VpnCommands::Profiles => commands::vpn::run_profiles(),
+            VpnCommands::Keygen {
+                link,
+                side_a,
+                side_b,
+                profile,
+            } => commands::vpn::run_keygen(&link, &side_a, &side_b, &profile),
+            VpnCommands::Validate {
+                config,
+                check_files,
+            } => commands::vpn::run_validate(&config, check_files),
         },
         Commands::Server { command } => match command {
             ServerCommands::Bootstrap { config } => commands::server::run_bootstrap(&config),
