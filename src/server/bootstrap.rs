@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use super::cluster_config::ClusterConfig;
 use super::health;
 use crate::commands::apply;
@@ -24,6 +27,7 @@ use crate::node_identity::NodeIdentity;
 pub enum BootstrapPhase {
     Pending,
     ConfigLoaded,
+    SecretsProvisioned,
     IdentityWritten,
     NixRebuildRunning,
     NixRebuildComplete,
@@ -183,8 +187,35 @@ pub fn run(config_path: &Path) -> Result<()> {
         state.transition(BootstrapPhase::ConfigLoaded)?;
     }
 
-    // Phase: Write node identity
+    // Phase: Provision bootstrap secrets (age key, GitHub token, etc.)
+    // MUST run before NixOS rebuild so sops-nix can find the age key.
     if state.phase == BootstrapPhase::ConfigLoaded {
+        let config = ClusterConfig::load(config_path)?;
+        match provision_bootstrap_secrets(&config) {
+            Ok(provisioned) => {
+                if provisioned > 0 {
+                    println!(
+                        "{} Provisioned {} bootstrap secret(s)",
+                        "ok".green().bold(),
+                        provisioned
+                    );
+                } else {
+                    println!(
+                        "{} No bootstrap secrets to provision",
+                        "::".blue().bold()
+                    );
+                }
+                state.transition(BootstrapPhase::SecretsProvisioned)?;
+            }
+            Err(e) => {
+                state.fail(&e.to_string())?;
+                bail!("bootstrap secrets provisioning failed: {}", e);
+            }
+        }
+    }
+
+    // Phase: Write node identity
+    if state.phase == BootstrapPhase::SecretsProvisioned {
         println!("{} Generating node identity", ">>".blue().bold());
         let config = ClusterConfig::load(config_path)?;
         let identity = config.to_node_identity();
@@ -326,6 +357,115 @@ pub fn run(config_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Known bootstrap secret keys and their target paths + permissions.
+struct SecretTarget {
+    key: &'static str,
+    dir: &'static str,
+    path: &'static str,
+    dir_mode: u32,
+    file_mode: u32,
+}
+
+const BOOTSTRAP_SECRET_TARGETS: &[SecretTarget] = &[
+    SecretTarget {
+        key: "sops_age_key",
+        dir: "/var/lib/sops-nix",
+        path: "/var/lib/sops-nix/key.txt",
+        dir_mode: 0o700,
+        file_mode: 0o600,
+    },
+    SecretTarget {
+        key: "flux_github_token",
+        dir: "/run/secrets.d",
+        path: "/run/secrets.d/flux-github-token",
+        dir_mode: 0o700,
+        file_mode: 0o400,
+    },
+];
+
+/// Write a secret value to a file with restrictive permissions.
+/// Creates the parent directory if needed. Idempotent: skips if file already
+/// exists with non-zero size.
+///
+/// Returns `true` if the file was written, `false` if skipped.
+fn write_secret_file(
+    dir_path: &Path,
+    file_path: &Path,
+    value: &str,
+    dir_mode: u32,
+    file_mode: u32,
+) -> Result<bool> {
+    // Idempotent: skip if file exists with content
+    if file_path.exists() {
+        let meta = std::fs::metadata(file_path)
+            .with_context(|| format!("failed to stat {}", file_path.display()))?;
+        if meta.len() > 0 {
+            println!(
+                "{} {} already exists, skipping",
+                "::".blue().bold(),
+                file_path.display()
+            );
+            return Ok(false);
+        }
+    }
+
+    // Create parent directory with restrictive permissions
+    if !dir_path.exists() {
+        std::fs::create_dir_all(dir_path)
+            .with_context(|| format!("failed to create {}", dir_path.display()))?;
+        #[cfg(unix)]
+        std::fs::set_permissions(dir_path, std::fs::Permissions::from_mode(dir_mode))
+            .with_context(|| format!("failed to set permissions on {}", dir_path.display()))?;
+    }
+
+    // Write secret with restrictive permissions
+    std::fs::write(file_path, value)
+        .with_context(|| format!("failed to write {}", file_path.display()))?;
+    #[cfg(unix)]
+    std::fs::set_permissions(file_path, std::fs::Permissions::from_mode(file_mode))
+        .with_context(|| format!("failed to set permissions on {}", file_path.display()))?;
+
+    println!(
+        "{} Wrote {} ({:04o})",
+        "ok".green().bold(),
+        file_path.display(),
+        file_mode
+    );
+    Ok(true)
+}
+
+/// Provision bootstrap secrets from cloud-init to filesystem paths.
+///
+/// Returns the number of secrets provisioned. Idempotent: skips secrets
+/// whose target paths already exist with non-zero size.
+fn provision_bootstrap_secrets(config: &ClusterConfig) -> Result<usize> {
+    let secrets = match &config.bootstrap_secrets {
+        Some(s) if !s.is_empty() => s,
+        _ => return Ok(0),
+    };
+
+    let mut provisioned = 0;
+
+    for target in BOOTSTRAP_SECRET_TARGETS {
+        let value = match secrets.get(target.key) {
+            Some(v) if !v.is_empty() => v,
+            _ => continue,
+        };
+
+        if write_secret_file(
+            Path::new(target.dir),
+            Path::new(target.path),
+            value,
+            target.dir_mode,
+            target.file_mode,
+        )? {
+            provisioned += 1;
+        }
+    }
+
+    Ok(provisioned)
+}
+
 /// Print the current bootstrap status.
 pub fn status() -> Result<()> {
     let state = BootstrapState::load_or_default("");
@@ -372,6 +512,10 @@ mod tests {
     fn bootstrap_phase_display() {
         assert_eq!(BootstrapPhase::Pending.to_string(), "pending");
         assert_eq!(BootstrapPhase::ConfigLoaded.to_string(), "config_loaded");
+        assert_eq!(
+            BootstrapPhase::SecretsProvisioned.to_string(),
+            "secrets_provisioned"
+        );
         assert_eq!(BootstrapPhase::WireguardWaiting.to_string(), "wireguard_waiting");
         assert_eq!(BootstrapPhase::WireguardReady.to_string(), "wireguard_ready");
         assert_eq!(BootstrapPhase::Complete.to_string(), "complete");
@@ -393,5 +537,78 @@ mod tests {
 
         assert_eq!(deserialized.phase, BootstrapPhase::K3sReady);
         assert_eq!(deserialized.cluster_name, "test-cluster");
+    }
+
+    #[test]
+    fn provision_writes_secrets_with_correct_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret_dir = dir.path().join("sops-nix");
+        let secret_path = secret_dir.join("key.txt");
+
+        let wrote = write_secret_file(
+            &secret_dir,
+            &secret_path,
+            "AGE-SECRET-KEY-TEST",
+            0o700,
+            0o600,
+        )
+        .unwrap();
+
+        assert!(wrote);
+        assert_eq!(
+            std::fs::read_to_string(&secret_path).unwrap(),
+            "AGE-SECRET-KEY-TEST"
+        );
+
+        #[cfg(unix)]
+        {
+            let file_mode = std::fs::metadata(&secret_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(file_mode, 0o600);
+            let dir_mode = std::fs::metadata(&secret_dir)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(dir_mode, 0o700);
+        }
+    }
+
+    #[test]
+    fn provision_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret_dir = dir.path().join("secrets");
+        let secret_path = secret_dir.join("token");
+
+        // First write
+        let wrote = write_secret_file(&secret_dir, &secret_path, "value1", 0o700, 0o400).unwrap();
+        assert!(wrote);
+
+        // Second write should skip (file exists with content)
+        let wrote = write_secret_file(&secret_dir, &secret_path, "value2", 0o700, 0o400).unwrap();
+        assert!(!wrote);
+
+        // Content should be the original value
+        assert_eq!(std::fs::read_to_string(&secret_path).unwrap(), "value1");
+    }
+
+    #[test]
+    fn provision_skips_when_no_secrets() {
+        let config = ClusterConfig::from_json(r#"{"cluster_name":"test"}"#).unwrap();
+        let result = provision_bootstrap_secrets(&config).unwrap();
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn provision_skips_empty_values() {
+        let config = ClusterConfig::from_json(
+            r#"{"cluster_name":"test","bootstrap_secrets":{"sops_age_key":"","flux_github_token":""}}"#,
+        )
+        .unwrap();
+        let result = provision_bootstrap_secrets(&config).unwrap();
+        assert_eq!(result, 0);
     }
 }

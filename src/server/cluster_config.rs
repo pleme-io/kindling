@@ -5,6 +5,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::node_identity::{
@@ -58,6 +59,12 @@ pub struct ClusterConfig {
 
     #[serde(default)]
     pub vpn: Option<VpnClusterConfig>,
+
+    /// Bootstrap secrets delivered via cloud-init.
+    /// Keys: "sops_age_key", "flux_github_token", etc.
+    /// Values: the raw secret content (not paths).
+    #[serde(default)]
+    pub bootstrap_secrets: Option<HashMap<String, String>>,
 }
 
 /// FluxCD bootstrap configuration from cloud-init.
@@ -528,6 +535,40 @@ mod tests {
         let config = ClusterConfig::from_json(MINIMAL_JSON).unwrap();
         let identity = config.to_node_identity();
         assert!(identity.network.vpn_links.is_empty());
+    }
+
+    // ── bootstrap_secrets tests ──────────────────────────────
+
+    #[test]
+    fn parse_bootstrap_secrets() {
+        let json = r#"{
+            "cluster_name": "dev-cluster",
+            "bootstrap_secrets": {
+                "sops_age_key": "AGE-SECRET-KEY-1FAKE...",
+                "flux_github_token": "ghp_faketoken123"
+            }
+        }"#;
+        let config = ClusterConfig::from_json(json).unwrap();
+        let secrets = config.bootstrap_secrets.as_ref().unwrap();
+        assert_eq!(secrets.get("sops_age_key").unwrap(), "AGE-SECRET-KEY-1FAKE...");
+        assert_eq!(secrets.get("flux_github_token").unwrap(), "ghp_faketoken123");
+    }
+
+    #[test]
+    fn parse_without_bootstrap_secrets() {
+        let config = ClusterConfig::from_json(MINIMAL_JSON).unwrap();
+        assert!(config.bootstrap_secrets.is_none());
+    }
+
+    #[test]
+    fn parse_empty_bootstrap_secrets() {
+        let json = r#"{
+            "cluster_name": "dev-cluster",
+            "bootstrap_secrets": {}
+        }"#;
+        let config = ClusterConfig::from_json(json).unwrap();
+        let secrets = config.bootstrap_secrets.as_ref().unwrap();
+        assert!(secrets.is_empty());
     }
 
     // ── require_liveness tests ──────────────────────────────
