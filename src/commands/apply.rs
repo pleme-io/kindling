@@ -77,8 +77,25 @@ fn run_rebuild(identity: &node_identity::NodeIdentity, gen_dir: &std::path::Path
         args.join(" ")
     );
 
-    let status = Command::new(cmd)
-        .args(&args)
+    let mut command = Command::new(cmd);
+    command.args(&args);
+
+    // Inject GitHub access token for private flake inputs if available
+    let token_path = std::path::Path::new("/etc/nix/github-access-token");
+    if token_path.exists() {
+        if let Ok(token) = std::fs::read_to_string(token_path) {
+            let token = token.trim();
+            if !token.is_empty() {
+                command.env("NIX_CONFIG", format!("access-tokens = github.com={}", token));
+                println!(
+                    "{} Injecting GitHub access-tokens for private flake inputs",
+                    "::".blue().bold()
+                );
+            }
+        }
+    }
+
+    let status = command
         .status()
         .with_context(|| format!("failed to run {cmd}"))?;
 
