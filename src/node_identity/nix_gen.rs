@@ -157,13 +157,13 @@ fn generate_nixos_flake(identity: &NodeIdentity) -> String {
     ni = builtins.fromJSON (builtins.readFile ./node.json);
   in {{
     nixosConfigurations.${{ni.hostname}} = nixpkgs.lib.nixosSystem {{
-      system = "x86_64-linux";
       modules = [
         kindling-profiles.nixosModules.default
         (import "${{kindling-profiles}}/profiles/{profile}")
         home-manager.nixosModules.home-manager
         sops-nix.nixosModules.sops
         {{
+          nixpkgs.hostPlatform = "x86_64-linux";
           kindling.nodeIdentity = ni;
           networking.hostName = ni.hostname;
         }}
