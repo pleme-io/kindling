@@ -205,6 +205,8 @@ pub fn run(config_path: &Path) -> Result<()> {
                         "::".blue().bold()
                     );
                 }
+                // Configure nix access-tokens if a GitHub token was provisioned
+                configure_nix_access_tokens(&config)?;
                 state.transition(BootstrapPhase::SecretsProvisioned)?;
             }
             Err(e) => {
@@ -381,6 +383,13 @@ const BOOTSTRAP_SECRET_TARGETS: &[SecretTarget] = &[
         dir_mode: 0o700,
         file_mode: 0o400,
     },
+    SecretTarget {
+        key: "nix_github_token",
+        dir: "/etc/nix",
+        path: "/etc/nix/github-access-token",
+        dir_mode: 0o755,
+        file_mode: 0o600,
+    },
 ];
 
 /// Write a secret value to a file with restrictive permissions.
@@ -464,6 +473,68 @@ fn provision_bootstrap_secrets(config: &ClusterConfig) -> Result<usize> {
     }
 
     Ok(provisioned)
+}
+
+/// Configure nix access-tokens so `nix build` can fetch private GitHub flake inputs.
+///
+/// Reads the provisioned token from `/etc/nix/github-access-token` and ensures
+/// `access-tokens = github.com=<token>` is set in `/etc/nix/nix.conf`.
+/// Idempotent: skips if the line is already present.
+fn configure_nix_access_tokens(config: &ClusterConfig) -> Result<()> {
+    let token_path = Path::new("/etc/nix/github-access-token");
+    if !token_path.exists() {
+        // No token provisioned — check if it was in bootstrap_secrets but empty
+        if let Some(secrets) = &config.bootstrap_secrets {
+            if secrets.get("nix_github_token").map_or(true, |v| v.is_empty()) {
+                return Ok(());
+            }
+        } else {
+            return Ok(());
+        }
+    }
+
+    let token = std::fs::read_to_string(token_path)
+        .context("failed to read /etc/nix/github-access-token")?;
+    let token = token.trim();
+    if token.is_empty() {
+        return Ok(());
+    }
+
+    let nix_conf_path = Path::new("/etc/nix/nix.conf");
+    let access_line = format!("access-tokens = github.com={}", token);
+
+    // Read existing nix.conf
+    let existing = if nix_conf_path.exists() {
+        std::fs::read_to_string(nix_conf_path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    // Check if access-tokens is already configured for github.com
+    if existing.lines().any(|l| l.trim().starts_with("access-tokens") && l.contains("github.com=")) {
+        println!(
+            "{} nix access-tokens already configured, skipping",
+            "::".blue().bold()
+        );
+        return Ok(());
+    }
+
+    // Append access-tokens line
+    let mut content = existing;
+    if !content.ends_with('\n') && !content.is_empty() {
+        content.push('\n');
+    }
+    content.push_str(&access_line);
+    content.push('\n');
+
+    std::fs::write(nix_conf_path, &content)
+        .context("failed to write /etc/nix/nix.conf")?;
+
+    println!(
+        "{} Configured nix access-tokens for github.com",
+        "ok".green().bold()
+    );
+    Ok(())
 }
 
 /// Print the current bootstrap status.
