@@ -112,7 +112,7 @@ pub struct K3sClusterConfig {
 /// Secrets path references for sops-nix.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecretsClusterConfig {
-    #[serde(default)]
+    #[serde(default, alias = "sops_age_key_path")]
     pub age_key_file: Option<String>,
     #[serde(default)]
     pub sops_file: Option<String>,
