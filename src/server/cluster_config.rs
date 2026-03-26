@@ -73,9 +73,23 @@ pub struct FluxcdClusterConfig {
     #[serde(default)]
     pub source_url: Option<String>,
     #[serde(default)]
+    pub source_auth: Option<String>,
+    #[serde(default)]
+    pub source_token_file: Option<String>,
+    #[serde(default)]
+    pub source_ssh_key_file: Option<String>,
+    #[serde(default)]
     pub reconcile_path: Option<String>,
     #[serde(default)]
+    pub reconcile_interval: Option<String>,
+    #[serde(default)]
+    pub reconcile_prune: Option<bool>,
+    #[serde(default)]
     pub branch: Option<String>,
+    #[serde(default)]
+    pub sops_enabled: Option<bool>,
+    #[serde(default)]
+    pub sops_age_key_file: Option<String>,
 }
 
 /// K3s-specific distribution options.
@@ -269,9 +283,14 @@ impl ClusterConfig {
             Some(fc) => FluxcdConfig {
                 enable: true,
                 source: fc.source_url.clone().unwrap_or_default(),
+                auth: fc.source_auth.clone().unwrap_or_else(|| "token".to_string()),
+                token_file: fc.source_token_file.clone(),
+                ssh_key_file: fc.source_ssh_key_file.clone(),
                 reconcile: serde_json::json!({
                     "path": fc.reconcile_path.as_deref().unwrap_or(""),
                     "branch": fc.branch.as_deref().unwrap_or("main"),
+                    "interval": fc.reconcile_interval.as_deref().unwrap_or("2m0s"),
+                    "prune": fc.reconcile_prune.unwrap_or(true),
                 }),
             },
             None => FluxcdConfig::default(),

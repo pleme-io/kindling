@@ -357,9 +357,19 @@ pub struct FluxcdConfig {
     pub enable: bool,
     #[serde(default)]
     pub source: String,
+    #[serde(default = "default_fluxcd_auth")]
+    pub auth: String,
+    #[serde(default)]
+    pub token_file: Option<String>,
+    #[serde(default)]
+    pub ssh_key_file: Option<String>,
     #[graphql(skip)]
     #[serde(default)]
     pub reconcile: serde_json::Value,
+}
+
+fn default_fluxcd_auth() -> String {
+    "token".to_string()
 }
 
 // ── Services ───────────────────────────────────────────────
