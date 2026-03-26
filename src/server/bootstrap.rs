@@ -365,6 +365,8 @@ struct SecretTarget {
     path: &'static str,
     dir_mode: u32,
     file_mode: u32,
+    /// If true, base64-decode the value before writing (for PEM certs stored as base64 in JSON).
+    base64_decode: bool,
 }
 
 const BOOTSTRAP_SECRET_TARGETS: &[SecretTarget] = &[
@@ -374,6 +376,7 @@ const BOOTSTRAP_SECRET_TARGETS: &[SecretTarget] = &[
         path: "/var/lib/sops-nix/key.txt",
         dir_mode: 0o700,
         file_mode: 0o600,
+        base64_decode: false,
     },
     SecretTarget {
         key: "flux_github_token",
@@ -381,6 +384,7 @@ const BOOTSTRAP_SECRET_TARGETS: &[SecretTarget] = &[
         path: "/run/secrets.d/flux-github-token",
         dir_mode: 0o700,
         file_mode: 0o400,
+        base64_decode: false,
     },
     SecretTarget {
         key: "nix_github_token",
@@ -388,6 +392,7 @@ const BOOTSTRAP_SECRET_TARGETS: &[SecretTarget] = &[
         path: "/etc/nix/github-access-token",
         dir_mode: 0o755,
         file_mode: 0o600,
+        base64_decode: false,
     },
     SecretTarget {
         key: "vpn_private_key",
@@ -395,6 +400,7 @@ const BOOTSTRAP_SECRET_TARGETS: &[SecretTarget] = &[
         path: "/run/secrets.d/vpn-private-key",
         dir_mode: 0o700,
         file_mode: 0o400,
+        base64_decode: false,
     },
     SecretTarget {
         key: "vpn_psk",
@@ -402,6 +408,7 @@ const BOOTSTRAP_SECRET_TARGETS: &[SecretTarget] = &[
         path: "/run/secrets.d/vpn-psk",
         dir_mode: 0o700,
         file_mode: 0o400,
+        base64_decode: false,
     },
     SecretTarget {
         key: "k3s_server_token",
@@ -409,6 +416,7 @@ const BOOTSTRAP_SECRET_TARGETS: &[SecretTarget] = &[
         path: "/var/lib/rancher/k3s/server/token",
         dir_mode: 0o700,
         file_mode: 0o600,
+        base64_decode: false,
     },
     SecretTarget {
         key: "k3s_admin_password",
@@ -416,6 +424,66 @@ const BOOTSTRAP_SECRET_TARGETS: &[SecretTarget] = &[
         path: "/var/lib/rancher/k3s/server/cred/passwd",
         dir_mode: 0o700,
         file_mode: 0o600,
+        base64_decode: false,
+    },
+    // ── K3s PKI (deterministic kubeconfig) ────────────────────────
+    // Pre-seeding the CA certs + keys ensures k3s reuses them instead
+    // of generating new ones. Values are base64-encoded PEM.
+    SecretTarget {
+        key: "k3s_tls_server_ca_crt",
+        dir: "/var/lib/rancher/k3s/server/tls",
+        path: "/var/lib/rancher/k3s/server/tls/server-ca.crt",
+        dir_mode: 0o700,
+        file_mode: 0o600,
+        base64_decode: true,
+    },
+    SecretTarget {
+        key: "k3s_tls_server_ca_key",
+        dir: "/var/lib/rancher/k3s/server/tls",
+        path: "/var/lib/rancher/k3s/server/tls/server-ca.key",
+        dir_mode: 0o700,
+        file_mode: 0o600,
+        base64_decode: true,
+    },
+    SecretTarget {
+        key: "k3s_tls_client_ca_crt",
+        dir: "/var/lib/rancher/k3s/server/tls",
+        path: "/var/lib/rancher/k3s/server/tls/client-ca.crt",
+        dir_mode: 0o700,
+        file_mode: 0o600,
+        base64_decode: true,
+    },
+    SecretTarget {
+        key: "k3s_tls_client_ca_key",
+        dir: "/var/lib/rancher/k3s/server/tls",
+        path: "/var/lib/rancher/k3s/server/tls/client-ca.key",
+        dir_mode: 0o700,
+        file_mode: 0o600,
+        base64_decode: true,
+    },
+    SecretTarget {
+        key: "k3s_tls_request_header_ca_crt",
+        dir: "/var/lib/rancher/k3s/server/tls",
+        path: "/var/lib/rancher/k3s/server/tls/request-header-ca.crt",
+        dir_mode: 0o700,
+        file_mode: 0o600,
+        base64_decode: true,
+    },
+    SecretTarget {
+        key: "k3s_tls_request_header_ca_key",
+        dir: "/var/lib/rancher/k3s/server/tls",
+        path: "/var/lib/rancher/k3s/server/tls/request-header-ca.key",
+        dir_mode: 0o700,
+        file_mode: 0o600,
+        base64_decode: true,
+    },
+    SecretTarget {
+        key: "k3s_tls_service_key",
+        dir: "/var/lib/rancher/k3s/server/tls",
+        path: "/var/lib/rancher/k3s/server/tls/service.key",
+        dir_mode: 0o700,
+        file_mode: 0o600,
+        base64_decode: true,
     },
 ];
 
@@ -483,15 +551,27 @@ fn provision_bootstrap_secrets(config: &ClusterConfig) -> Result<usize> {
     let mut provisioned = 0;
 
     for target in BOOTSTRAP_SECRET_TARGETS {
-        let value = match secrets.get(target.key) {
+        let raw_value = match secrets.get(target.key) {
             Some(v) if !v.is_empty() => v,
             _ => continue,
+        };
+
+        // Base64 decode if needed (TLS certs are stored as base64 in JSON)
+        let value = if target.base64_decode {
+            use base64::Engine;
+            match base64::engine::general_purpose::STANDARD.decode(raw_value.trim()) {
+                Ok(decoded) => String::from_utf8(decoded)
+                    .unwrap_or_else(|_| raw_value.clone()),
+                Err(_) => raw_value.clone(), // fallback: write as-is
+            }
+        } else {
+            raw_value.clone()
         };
 
         if write_secret_file(
             Path::new(target.dir),
             Path::new(target.path),
-            value,
+            &value,
             target.dir_mode,
             target.file_mode,
         )? {
