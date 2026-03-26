@@ -403,6 +403,20 @@ const BOOTSTRAP_SECRET_TARGETS: &[SecretTarget] = &[
         dir_mode: 0o700,
         file_mode: 0o400,
     },
+    SecretTarget {
+        key: "k3s_server_token",
+        dir: "/var/lib/rancher/k3s/server",
+        path: "/var/lib/rancher/k3s/server/token",
+        dir_mode: 0o700,
+        file_mode: 0o600,
+    },
+    SecretTarget {
+        key: "k3s_admin_password",
+        dir: "/var/lib/rancher/k3s/server/cred",
+        path: "/var/lib/rancher/k3s/server/cred/passwd",
+        dir_mode: 0o700,
+        file_mode: 0o600,
+    },
 ];
 
 /// Write a secret value to a file with restrictive permissions.
