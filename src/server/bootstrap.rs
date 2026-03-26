@@ -388,6 +388,20 @@ const BOOTSTRAP_SECRET_TARGETS: &[SecretTarget] = &[
         dir_mode: 0o755,
         file_mode: 0o600,
     },
+    SecretTarget {
+        key: "vpn_private_key",
+        dir: "/run/secrets.d",
+        path: "/run/secrets.d/vpn-private-key",
+        dir_mode: 0o700,
+        file_mode: 0o400,
+    },
+    SecretTarget {
+        key: "vpn_psk",
+        dir: "/run/secrets.d",
+        path: "/run/secrets.d/vpn-psk",
+        dir_mode: 0o700,
+        file_mode: 0o400,
+    },
 ];
 
 /// Write a secret value to a file with restrictive permissions.
