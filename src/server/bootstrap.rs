@@ -155,7 +155,8 @@ pub fn run(config_path: &Path) -> Result<()> {
             "{} Validating security invariants",
             ">>".blue().bold()
         );
-        match config.validate_vpn_security_full() {
+        // Structural only — key files don't exist yet (written in SecretsProvisioned phase)
+        match config.validate_vpn_security() {
             Ok(()) => {
                 if config.vpn.is_some() {
                     println!(
