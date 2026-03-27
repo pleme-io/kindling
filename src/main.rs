@@ -162,6 +162,12 @@ enum Commands {
         command: VpnCommands,
     },
 
+    /// Validate a NixOS AMI before Packer snapshots it
+    AmiTest(commands::ami_test::AmiTestArgs),
+
+    /// Read cloud userdata, extract cluster config, and bootstrap the node
+    Init(commands::init::InitArgs),
+
     /// Query a kindling daemon's REST API
     Query {
         /// Target node name (from config nodes map; defaults to localhost)
@@ -322,6 +328,8 @@ fn main() -> anyhow::Result<()> {
             ServerCommands::Bootstrap { config } => commands::server::run_bootstrap(&config),
             ServerCommands::Status => commands::server::run_status(),
         },
+        Commands::AmiTest(args) => commands::ami_test::run(&args),
+        Commands::Init(args) => commands::init::run(args),
         Commands::Report {
             format,
             push,

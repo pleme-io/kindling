@@ -1,9 +1,11 @@
+pub mod ami_test;
 pub mod apply;
 pub mod bootstrap;
 pub mod check;
 pub mod daemon;
 pub mod ensure;
 pub mod fleet;
+pub mod init;
 pub mod install;
 pub mod profile;
 pub mod query;
