@@ -63,9 +63,15 @@ in {
     ];
 
     # Bootstrap service — runs once, remains after exit
+    #
+    # Ordering: amazon-init.service (NixOS EC2 userdata handler) writes
+    # /etc/pangea/cluster-config.json, then this service picks it up.
+    # NixOS does NOT have cloud-init.target — it uses amazon-init.service.
+    # On non-EC2 platforms with real cloud-init, cloud-init.target is listed
+    # as a soft dependency (systemd silently ignores missing units in After=).
     systemd.services.kindling-server-bootstrap = {
       description = "Kindling server bootstrap — K3s cluster setup";
-      after = ["network-online.target" "cloud-init.target"];
+      after = ["network-online.target" "amazon-init.service" "cloud-init.target"];
       wants = ["network-online.target"];
       wantedBy = ["multi-user.target"];
 
