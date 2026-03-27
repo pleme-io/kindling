@@ -72,6 +72,9 @@ in {
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        # Only run if cloud-init has written the cluster config.
+        # On AMI build instances there's no config — service skips cleanly.
+        ExecCondition = "${pkgs.bash}/bin/bash -c 'test -f ${cfg.configPath}'";
         ExecStart = "${cfg.package}/bin/kindling server bootstrap --config ${cfg.configPath}";
         StandardOutput = "journal";
         StandardError = "journal";
