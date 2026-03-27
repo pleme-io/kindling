@@ -79,14 +79,12 @@ in {
         TimeoutStartSec = "1800";
       };
 
-      environment = {
-        PATH = lib.makeBinPath (with pkgs; [
-          nix
-          git
-          kubectl
-          nixos-rebuild
-        ]);
-      };
+      path = with pkgs; [
+        nix
+        git
+        kubectl
+        nixos-rebuild
+      ];
     };
 
     # Daemon service — provides monitoring API after bootstrap
