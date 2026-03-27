@@ -7,10 +7,11 @@
 
 use anyhow::{bail, Context, Result};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::OpenOptionsExt;
 
 use crate::server::bootstrap;
 
@@ -161,12 +162,18 @@ fn write_config(json: &str, path: &Path) -> Result<()> {
             .with_context(|| format!("failed to create directory {}", parent.display()))?;
     }
 
-    fs::write(path, json)
-        .with_context(|| format!("failed to write config to {}", path.display()))?;
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
 
     #[cfg(unix)]
-    fs::set_permissions(path, fs::Permissions::from_mode(0o640))
-        .with_context(|| format!("failed to set permissions on {}", path.display()))?;
+    opts.mode(0o640);
+
+    let mut file = opts
+        .open(path)
+        .with_context(|| format!("failed to create config file {}", path.display()))?;
+
+    file.write_all(json.as_bytes())
+        .with_context(|| format!("failed to write config to {}", path.display()))?;
 
     Ok(())
 }
@@ -174,6 +181,9 @@ fn write_config(json: &str, path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn detect_format_json() {

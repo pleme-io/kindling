@@ -18,6 +18,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use super::cluster_config::ClusterConfig;
 use super::health;
+use super::wireguard_fast;
 use crate::commands::apply;
 use crate::node_identity::NodeIdentity;
 
@@ -28,6 +29,7 @@ pub enum BootstrapPhase {
     Pending,
     ConfigLoaded,
     SecretsProvisioned,
+    WireguardFastStart,
     IdentityWritten,
     NixRebuildRunning,
     NixRebuildComplete,
@@ -215,8 +217,33 @@ pub fn run(config_path: &Path) -> Result<()> {
         }
     }
 
-    // Phase: Write node identity
+    // Phase: WireGuard fast-start (before nixos-rebuild for <12s VPN connectivity)
     if state.phase == BootstrapPhase::SecretsProvisioned {
+        let config = ClusterConfig::load(config_path)?;
+        println!(
+            "{} Fast-starting WireGuard (before nixos-rebuild)",
+            ">>".blue().bold()
+        );
+        match wireguard_fast::fast_start(&config) {
+            Ok(()) => {
+                println!(
+                    "{} WireGuard fast-start successful",
+                    "ok".green().bold()
+                );
+            }
+            Err(e) => {
+                println!(
+                    "{} WireGuard fast-start failed (will retry after rebuild): {}",
+                    "!!".yellow().bold(),
+                    e
+                );
+            }
+        }
+        state.transition(BootstrapPhase::WireguardFastStart)?;
+    }
+
+    // Phase: Write node identity
+    if state.phase == BootstrapPhase::WireguardFastStart {
         println!("{} Generating node identity", ">>".blue().bold());
         let config = ClusterConfig::load(config_path)?;
         let identity = config.to_node_identity();
@@ -631,6 +658,10 @@ mod tests {
         assert_eq!(
             BootstrapPhase::SecretsProvisioned.to_string(),
             "secrets_provisioned"
+        );
+        assert_eq!(
+            BootstrapPhase::WireguardFastStart.to_string(),
+            "wireguard_fast_start"
         );
         assert_eq!(BootstrapPhase::WireguardWaiting.to_string(), "wireguard_waiting");
         assert_eq!(BootstrapPhase::WireguardReady.to_string(), "wireguard_ready");

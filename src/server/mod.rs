@@ -10,3 +10,4 @@ pub mod bootstrap;
 pub mod cluster_config;
 pub mod daemon;
 pub mod health;
+pub mod wireguard_fast;

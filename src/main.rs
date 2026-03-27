@@ -328,7 +328,7 @@ fn main() -> anyhow::Result<()> {
             ServerCommands::Bootstrap { config } => commands::server::run_bootstrap(&config),
             ServerCommands::Status => commands::server::run_status(),
         },
-        Commands::AmiTest(args) => commands::ami_test::run(&args),
+        Commands::AmiTest(args) => commands::ami_test::run(args),
         Commands::Init(args) => commands::init::run(args),
         Commands::Report {
             format,

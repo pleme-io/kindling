@@ -16,7 +16,6 @@
 }:
 with lib; let
   cfg = config.services.kindling.server;
-  daemonCfg = config.services.kindling.daemon or {};
 in {
   options.services.kindling.server = {
     enable = mkOption {
@@ -84,15 +83,15 @@ in {
     systemd.services.kindling-init = mkIf (!cfg.legacyBootstrap) {
       description = "Kindling init — read cloud metadata + bootstrap K3s cluster";
       after = ["fetch-ec2-metadata.service" "network-online.target"];
-      wants = ["network-online.target"];
+      wants = ["network-online.target" "fetch-ec2-metadata.service"];
       wantedBy = ["multi-user.target"];
 
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        # Only run if EC2 metadata was fetched (userdata file exists).
+        # Only run if EC2 metadata was fetched (userdata file exists and is non-empty).
         # On AMI build instances there's no userdata — service skips cleanly.
-        ExecCondition = "${pkgs.bash}/bin/bash -c 'test -f /etc/ec2-metadata/user-data'";
+        ExecCondition = "${pkgs.bash}/bin/bash -c 'test -s /etc/ec2-metadata/user-data'";
         ExecStart = "${cfg.package}/bin/kindling init --userdata /etc/ec2-metadata/user-data --config-out ${cfg.configPath}";
         StandardOutput = "journal";
         StandardError = "journal";

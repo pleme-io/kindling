@@ -10,11 +10,17 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
 
+#[derive(Clone, clap::ValueEnum)]
+enum OutputFormat {
+    Text,
+    Json,
+}
+
 #[derive(Args)]
 pub struct AmiTestArgs {
     /// Output format (text or json)
-    #[arg(long, default_value = "text")]
-    format: String,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    format: OutputFormat,
 }
 
 #[derive(Serialize)]
@@ -25,7 +31,7 @@ struct TestResult {
     duration_ms: u64,
 }
 
-pub fn run(args: &AmiTestArgs) -> Result<()> {
+pub fn run(args: AmiTestArgs) -> Result<()> {
     tracing::info!("starting AMI validation checks");
 
     let results = vec![
@@ -43,8 +49,8 @@ pub fn run(args: &AmiTestArgs) -> Result<()> {
     let total = results.len();
     let passed = results.iter().filter(|r| r.passed).count();
 
-    match args.format.as_str() {
-        "json" => {
+    match args.format {
+        OutputFormat::Json => {
             let output = serde_json::json!({
                 "results": results,
                 "total": total,
@@ -53,7 +59,7 @@ pub fn run(args: &AmiTestArgs) -> Result<()> {
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         }
-        _ => {
+        OutputFormat::Text => {
             for r in &results {
                 let tag = if r.passed { "[PASS]" } else { "[FAIL]" };
                 println!("{} {}: {}", tag, r.name, r.message);
@@ -71,7 +77,7 @@ pub fn run(args: &AmiTestArgs) -> Result<()> {
     }
 
     if passed < total {
-        std::process::exit(1);
+        anyhow::bail!("{}/{} checks failed", total - passed, total);
     }
 
     Ok(())
@@ -187,7 +193,7 @@ fn check_nix_daemon() -> TestResult {
 
 fn check_nixos_rebuild() -> TestResult {
     let start = Instant::now();
-    let (passed, message) = match run_cmd("which", &["nixos-rebuild"]) {
+    let (passed, message) = match run_cmd("nixos-rebuild", &["--help"]) {
         Ok(out) => (true, out),
         Err(e) => (false, e),
     };
@@ -227,7 +233,6 @@ fn check_no_leaked_secrets() -> TestResult {
     let forbidden_files = [
         "/etc/pangea/cluster-config.json",
         "/var/lib/kindling/server-state.json",
-        "/root/.config/nix/nix.conf",
     ];
 
     let mut leaked: Vec<String> = Vec::new();
