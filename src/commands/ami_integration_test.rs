@@ -329,5 +329,10 @@ fn dump_kindling_journal() {
     let _ = Command::new("journalctl")
         .args(["-u", "kindling-init.service", "-n", "50", "--no-pager"])
         .status();
+    println!();
+    println!("=== k3s journal (last 30 lines) ===");
+    let _ = Command::new("journalctl")
+        .args(["-u", "k3s.service", "-n", "30", "--no-pager"])
+        .status();
     println!("=== end journal ===");
 }

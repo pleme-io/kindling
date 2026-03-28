@@ -315,8 +315,15 @@ pub fn run(config_path: &Path) -> Result<()> {
                 .status()
                 .context("failed to start k3s.service")?;
             if !k3s_status.success() {
-                state.fail("systemctl start k3s.service failed")?;
-                bail!("failed to start K3s service (exit {})", k3s_status);
+                // Capture K3s journal for debugging
+                let journal = std::process::Command::new("journalctl")
+                    .args(["-u", "k3s.service", "-n", "20", "--no-pager"])
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                    .unwrap_or_default();
+                let err_msg = format!("systemctl start k3s.service failed (exit {k3s_status})\nK3s journal:\n{journal}");
+                state.fail(&err_msg)?;
+                bail!("{}", err_msg);
             }
             println!("{} K3s service started", "ok".green().bold());
             state.transition(BootstrapPhase::NixRebuildComplete)?;
