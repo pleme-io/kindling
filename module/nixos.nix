@@ -83,6 +83,7 @@ in {
     systemd.services.kindling-init = mkIf (!cfg.legacyBootstrap) {
       description = "Kindling init — read cloud metadata + bootstrap K3s cluster";
       after = ["fetch-ec2-metadata.service" "network-online.target"];
+      before = ["k3s.service"];
       wants = ["network-online.target" "fetch-ec2-metadata.service"];
       wantedBy = ["multi-user.target"];
 

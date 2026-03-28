@@ -307,28 +307,13 @@ pub fn run(config_path: &Path) -> Result<()> {
             state.transition(BootstrapPhase::NixRebuildRunning)?;
 
             // The AMI already has the full NixOS config from the build phase.
-            // Restart K3s (stopped in ConfigLoaded phase) with the secrets
-            // provisioned in SecretsProvisioned phase. Use `restart` instead
-            // of `start` so systemd re-reads the unit and doesn't hit a
-            // stale "failed" state. Don't block on the notify — the K3s
-            // health check phase will wait for it to become ready.
-            println!("{} Restarting K3s service", ">>".blue().bold());
-            let _ = std::process::Command::new("systemctl")
-                .args(["reset-failed", "k3s.service"])
-                .status();
-            let k3s_status = std::process::Command::new("systemctl")
-                .args(["start", "--no-block", "k3s.service"])
-                .status()
-                .context("failed to start k3s.service")?;
-            if !k3s_status.success() {
-                println!(
-                    "{} K3s start request returned non-zero (may still be starting): {}",
-                    "!!".yellow().bold(),
-                    k3s_status
-                );
-            } else {
-                println!("{} K3s service start requested", "ok".green().bold());
-            }
+            // K3s will auto-start after kindling-init completes because the
+            // NixOS module sets Before=k3s.service on kindling-init.service.
+            // No manual start needed — systemd handles the ordering.
+            println!(
+                "{} K3s will auto-start after init completes (Before=k3s.service)",
+                "::".blue().bold()
+            );
             state.transition(BootstrapPhase::NixRebuildComplete)?;
         } else {
             println!("{} Running nixos-rebuild switch", ">>".blue().bold());
