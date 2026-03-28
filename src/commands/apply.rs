@@ -68,7 +68,26 @@ fn run_rebuild(identity: &node_identity::NodeIdentity, gen_dir: &std::path::Path
     let flake_ref = format!("{}#{}", gen_dir.display(), identity.hostname);
 
     let cmd = if is_darwin { "darwin-rebuild" } else { "nixos-rebuild" };
-    let args = vec!["switch", "--flake", &flake_ref];
+    let mut args = vec!["switch".to_string(), "--flake".to_string(), flake_ref.clone()];
+
+    // Inject GitHub access token for private flake inputs if available.
+    // Uses --option to pass directly to nix — NIX_CONFIG env var is NOT
+    // inherited by the nix daemon, so env-based injection doesn't work.
+    let token_path = std::path::Path::new("/etc/nix/github-access-token");
+    if token_path.exists() {
+        if let Ok(token) = std::fs::read_to_string(token_path) {
+            let token = token.trim();
+            if !token.is_empty() {
+                args.push("--option".to_string());
+                args.push("access-tokens".to_string());
+                args.push(format!("github.com={token}"));
+                println!(
+                    "{} Injecting GitHub access-tokens via --option for private flake inputs",
+                    "::".blue().bold()
+                );
+            }
+        }
+    }
 
     println!(
         "{} Running: {} {}",
@@ -77,25 +96,9 @@ fn run_rebuild(identity: &node_identity::NodeIdentity, gen_dir: &std::path::Path
         args.join(" ")
     );
 
-    let mut command = Command::new(cmd);
-    command.args(&args);
-
-    // Inject GitHub access token for private flake inputs if available
-    let token_path = std::path::Path::new("/etc/nix/github-access-token");
-    if token_path.exists() {
-        if let Ok(token) = std::fs::read_to_string(token_path) {
-            let token = token.trim();
-            if !token.is_empty() {
-                command.env("NIX_CONFIG", format!("access-tokens = github.com={}", token));
-                println!(
-                    "{} Injecting GitHub access-tokens for private flake inputs",
-                    "::".blue().bold()
-                );
-            }
-        }
-    }
-
-    let status = command
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let status = Command::new(cmd)
+        .args(&arg_refs)
         .status()
         .with_context(|| format!("failed to run {cmd}"))?;
 
