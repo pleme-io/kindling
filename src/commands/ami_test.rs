@@ -11,7 +11,7 @@ use std::process::Command;
 use std::time::Instant;
 
 #[derive(Clone, clap::ValueEnum)]
-enum OutputFormat {
+pub enum OutputFormat {
     Text,
     Json,
 }
@@ -20,7 +20,7 @@ enum OutputFormat {
 pub struct AmiTestArgs {
     /// Output format (text or json)
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
-    format: OutputFormat,
+    pub format: OutputFormat,
 }
 
 #[derive(Serialize)]

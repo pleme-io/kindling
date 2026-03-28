@@ -162,6 +162,9 @@ enum Commands {
         command: VpnCommands,
     },
 
+    /// Build a NixOS AMI: nixos-rebuild + clean K3s state + validate + cleanup
+    AmiBuild(commands::ami_build::AmiBuildArgs),
+
     /// Validate a NixOS AMI before Packer snapshots it
     AmiTest(commands::ami_test::AmiTestArgs),
 
@@ -328,6 +331,7 @@ fn main() -> anyhow::Result<()> {
             ServerCommands::Bootstrap { config } => commands::server::run_bootstrap(&config),
             ServerCommands::Status => commands::server::run_status(),
         },
+        Commands::AmiBuild(args) => commands::ami_build::run(args),
         Commands::AmiTest(args) => commands::ami_test::run(args),
         Commands::Init(args) => commands::init::run(args),
         Commands::Report {
