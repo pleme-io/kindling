@@ -32,6 +32,20 @@ pub fn run(args: AmiIntegrationTestArgs) -> Result<()> {
     println!("=== AMI Integration Test ===");
     println!("Timeout: {}s", args.timeout);
 
+    // Pre-check: show userdata status for debugging
+    let ud_path = std::path::Path::new("/etc/ec2-metadata/user-data");
+    if ud_path.exists() {
+        let ud_size = std::fs::metadata(ud_path).map(|m| m.len()).unwrap_or(0);
+        println!("Userdata: {} ({} bytes)", ud_path.display(), ud_size);
+        if ud_size < 2048 {
+            if let Ok(content) = std::fs::read_to_string(ud_path) {
+                println!("Userdata content (first 500 chars): {}", &content[..content.len().min(500)]);
+            }
+        }
+    } else {
+        println!("WARNING: {} does not exist — kindling-init will skip", ud_path.display());
+    }
+
     // Phase 1: Wait for kindling-init.service to complete
     println!();
     println!("[phase:1/3] Waiting for kindling-init.service to complete...");
@@ -119,6 +133,7 @@ fn wait_for_kindling_init(deadline: Instant) -> Result<()> {
             }
             // Failed
             ("failed", _) | ("inactive", "failed") => {
+                dump_kindling_journal();
                 bail!("kindling-init.service failed (SubState={})", sub_state);
             }
             // Still starting or not yet started
