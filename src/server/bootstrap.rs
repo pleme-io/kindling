@@ -306,10 +306,17 @@ pub fn run(config_path: &Path) -> Result<()> {
             );
             state.transition(BootstrapPhase::NixRebuildRunning)?;
 
-            // The AMI already has the full NixOS config from the build phase.
+            // Write K3s runtime config so K3s starts with the right flags.
+            // Without nixos-rebuild, the NixOS systemd unit has the AMI's
+            // default flags. This config.yaml overrides them at runtime.
+            println!(
+                "{} Writing K3s runtime config",
+                ">>".blue().bold()
+            );
+            write_k3s_runtime_config(&config)?;
+
             // K3s will auto-start after kindling-init completes because the
             // NixOS module sets Before=k3s.service on kindling-init.service.
-            // No manual start needed — systemd handles the ordering.
             println!(
                 "{} K3s will auto-start after init completes (Before=k3s.service)",
                 "::".blue().bold()
@@ -454,6 +461,62 @@ pub fn run(config_path: &Path) -> Result<()> {
         );
     }
 
+    Ok(())
+}
+
+/// Write `/etc/rancher/k3s/config.yaml` for K3s runtime configuration.
+///
+/// When `skip_nix_rebuild` is true, the NixOS K3s systemd unit has the AMI's
+/// default flags. This config file overrides K3s behavior at startup:
+/// - `cluster-init: true` for the first server
+/// - `server: https://...` for joining an existing cluster
+/// - `token` for cluster authentication
+/// - `tls-san` for certificate SANs
+fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
+    let config_dir = Path::new("/etc/rancher/k3s");
+    let config_path = config_dir.join("config.yaml");
+
+    std::fs::create_dir_all(config_dir)
+        .with_context(|| format!("failed to create {}", config_dir.display()))?;
+
+    let mut lines: Vec<String> = Vec::new();
+
+    // Cluster init vs join
+    if let Some(ref join) = config.join_server {
+        lines.push(format!("server: \"{}\"", join));
+    } else if config.cluster_init {
+        lines.push("cluster-init: true".to_string());
+    }
+
+    // Token from bootstrap_secrets
+    if let Some(ref secrets) = config.bootstrap_secrets {
+        if let Some(token) = secrets.get("k3s_server_token") {
+            if !token.is_empty() {
+                lines.push(format!("token: \"{}\"", token));
+            }
+        }
+    }
+
+    // TLS SANs
+    if let Some(ref k3s) = config.k3s {
+        if !k3s.tls_san.is_empty() {
+            lines.push("tls-san:".to_string());
+            for san in &k3s.tls_san {
+                lines.push(format!("  - \"{}\"", san));
+            }
+        }
+    }
+
+    let content = lines.join("\n") + "\n";
+    std::fs::write(&config_path, &content)
+        .with_context(|| format!("failed to write {}", config_path.display()))?;
+
+    println!(
+        "{} Wrote {} ({} bytes)",
+        "ok".green().bold(),
+        config_path.display(),
+        content.len()
+    );
     Ok(())
 }
 
