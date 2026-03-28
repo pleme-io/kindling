@@ -35,15 +35,21 @@ pub fn run(args: AmiTestArgs) -> Result<()> {
     tracing::info!("starting AMI validation checks");
 
     let results = vec![
+        // Binary presence
         check_kindling_binary(),
-        check_kindling_init_service(),
         check_k3s_binary(),
         check_wireguard_tools(),
-        check_nix_daemon(),
         check_nixos_rebuild(),
-        check_network_connectivity(),
-        check_no_leaked_secrets(),
+        // Service configuration
+        check_kindling_init_service(),
+        check_nix_daemon(),
         check_amazon_init_disabled(),
+        // Orchestration invariants (catch boot ordering issues at AMI build time)
+        check_k3s_no_stale_state(),
+        check_no_stale_tls(),
+        check_no_leaked_secrets(),
+        // Network
+        check_network_connectivity(),
     ];
 
     let total = results.len();
@@ -267,6 +273,62 @@ fn check_no_leaked_secrets() -> TestResult {
 
     TestResult {
         name: "no-leaked-secrets".into(),
+        passed,
+        message,
+        duration_ms: start.elapsed().as_millis() as u64,
+    }
+}
+
+/// Verify no stale K3s server state exists in the AMI.
+/// If K3s state exists in the AMI, kindling can't seed deterministic PKI.
+fn check_k3s_no_stale_state() -> TestResult {
+    let start = Instant::now();
+    let server_dir = Path::new("/var/lib/rancher/k3s/server");
+
+    let (passed, message) = if !server_dir.exists() {
+        (true, "no stale K3s server state".into())
+    } else {
+        // Check for datastore (kine.db or other state)
+        let has_db = server_dir.join("db").exists()
+            || server_dir.join("kine.db").exists()
+            || server_dir.join("kine.sock").exists();
+        if has_db {
+            (false, "K3s datastore exists — AMI has stale cluster state".into())
+        } else {
+            (true, "K3s server dir exists but no datastore (clean)".into())
+        }
+    };
+    TestResult {
+        name: "k3s-no-stale-state".into(),
+        passed,
+        message,
+        duration_ms: start.elapsed().as_millis() as u64,
+    }
+}
+
+/// Verify no stale TLS certificates exist in the AMI.
+/// Stale certs would cause K3s to use the wrong CA.
+fn check_no_stale_tls() -> TestResult {
+    let start = Instant::now();
+    let tls_dir = Path::new("/var/lib/rancher/k3s/server/tls");
+
+    let (passed, message) = if !tls_dir.exists() {
+        (true, "no stale TLS certs".into())
+    } else {
+        match std::fs::read_dir(tls_dir) {
+            Ok(entries) => {
+                let count = entries.count();
+                if count > 0 {
+                    (false, format!("stale TLS dir has {count} files — K3s will ignore seeded PKI"))
+                } else {
+                    (true, "TLS dir exists but empty".into())
+                }
+            }
+            Err(e) => (false, format!("can't read TLS dir: {e}")),
+        }
+    };
+    TestResult {
+        name: "no-stale-tls".into(),
         passed,
         message,
         duration_ms: start.elapsed().as_millis() as u64,
