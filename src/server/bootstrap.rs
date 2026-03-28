@@ -190,7 +190,45 @@ pub fn run(config_path: &Path) -> Result<()> {
         state.transition(BootstrapPhase::ConfigLoaded)?;
     }
 
-    // Phase: Provision bootstrap secrets (age key, GitHub token, etc.)
+    // Phase: Stop K3s before writing PKI secrets
+    // K3s auto-starts from the AMI config and generates its own CA.
+    // We must stop it, clear stale TLS state, then let nixos-rebuild
+    // start it fresh with our seeded PKI.
+    if state.phase == BootstrapPhase::ConfigLoaded {
+        // K3s may have auto-started from the AMI config and generated its own
+        // CA certs + datastore. We must halt it and clear ALL state so it starts
+        // fresh with our seeded PKI. K3s reads CA from its datastore on restart —
+        // if the datastore has a different CA, it ignores files on disk.
+        println!("{} Preparing K3s for deterministic PKI seeding", ">>".blue().bold());
+        let k3s_active = std::process::Command::new("systemctl")
+            .args(["is-active", "--quiet", "k3s.service"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if k3s_active {
+            println!("{} Halting K3s before PKI seeding", "::".blue().bold());
+            let _ = std::process::Command::new("systemctl")
+                .args(["stop", "k3s.service"])
+                .status();
+        }
+
+        // Clear K3s server state (TLS + datastore) for clean PKI seeding.
+        // K3s stores its CA in an embedded SQLite datastore — if that exists
+        // from a prior boot, K3s ignores CA files on disk. Clear everything
+        // so K3s initializes fresh from our seeded PKI files.
+        // provision_bootstrap_secrets (next phase) re-writes all needed files.
+        let server_dir = std::path::Path::new("/var/lib/rancher/k3s/server");
+        if server_dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(server_dir) {
+                println!("{} Failed to clear K3s server dir: {e}", "!!".yellow().bold());
+            } else {
+                println!("{} Cleared K3s server state for deterministic PKI", "ok".green().bold());
+            }
+        }
+    }
+
+    // Phase: Provision bootstrap secrets (age key, GitHub token, PKI, etc.)
     // MUST run before NixOS rebuild so sops-nix can find the age key.
     if state.phase == BootstrapPhase::ConfigLoaded {
         let config = ClusterConfig::load(config_path)?;
