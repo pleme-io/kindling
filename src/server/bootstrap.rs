@@ -374,27 +374,42 @@ pub fn run(config_path: &Path) -> Result<()> {
         }
     }
 
-    // Phase: Wait for K3s
+    // Phase: Wait for K3s (skip when skip_nix_rebuild — K3s starts AFTER init exits)
     if state.phase == BootstrapPhase::WireguardReady {
-        println!("{} Waiting for K3s to become ready", ">>".blue().bold());
-        state.transition(BootstrapPhase::K3sWaiting)?;
+        let config = ClusterConfig::load(config_path)?;
+        if config.skip_nix_rebuild == Some(true) {
+            println!(
+                "{} Skipping K3s health check (K3s starts after init exits via Before=k3s.service)",
+                "::".blue().bold()
+            );
+            state.transition(BootstrapPhase::K3sReady)?;
+        } else {
+            println!("{} Waiting for K3s to become ready", ">>".blue().bold());
+            state.transition(BootstrapPhase::K3sWaiting)?;
 
-        match health::wait_for_k3s(Duration::from_secs(300), Duration::from_secs(10)) {
-            Ok(status) => {
-                println!("{} K3s ready: {}", "ok".green().bold(), status.message);
-                state.transition(BootstrapPhase::K3sReady)?;
-            }
-            Err(e) => {
-                state.fail(&e.to_string())?;
-                bail!("K3s health check failed: {}", e);
+            match health::wait_for_k3s(Duration::from_secs(300), Duration::from_secs(10)) {
+                Ok(status) => {
+                    println!("{} K3s ready: {}", "ok".green().bold(), status.message);
+                    state.transition(BootstrapPhase::K3sReady)?;
+                }
+                Err(e) => {
+                    state.fail(&e.to_string())?;
+                    bail!("K3s health check failed: {}", e);
+                }
             }
         }
     }
 
-    // Phase: Wait for FluxCD (only if enabled)
+    // Phase: Wait for FluxCD (only if enabled; skip when skip_nix_rebuild)
     if state.phase == BootstrapPhase::K3sReady {
         let config = ClusterConfig::load(config_path)?;
-        if config.fluxcd.is_some() {
+        if config.skip_nix_rebuild == Some(true) {
+            println!(
+                "{} Skipping FluxCD check (skip_nix_rebuild mode)",
+                "::".blue().bold()
+            );
+            state.transition(BootstrapPhase::FluxcdReady)?;
+        } else if config.fluxcd.is_some() {
             println!(
                 "{} Waiting for FluxCD reconciliation",
                 ">>".blue().bold()
