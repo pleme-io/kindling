@@ -65,6 +65,13 @@ pub struct ClusterConfig {
     /// Values: the raw secret content (not paths).
     #[serde(default)]
     pub bootstrap_secrets: Option<HashMap<String, String>>,
+
+    /// Skip nixos-rebuild during bootstrap (for AMI integration testing).
+    /// When true, the bootstrap provisions secrets, starts WireGuard, and
+    /// starts K3s directly without running nixos-rebuild. The AMI already
+    /// has the full NixOS config from the build phase.
+    #[serde(default)]
+    pub skip_nix_rebuild: Option<bool>,
 }
 
 /// FluxCD bootstrap configuration from cloud-init.

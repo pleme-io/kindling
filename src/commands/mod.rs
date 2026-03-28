@@ -1,4 +1,5 @@
 pub mod ami_build;
+pub mod ami_integration_test;
 pub mod ami_test;
 pub mod apply;
 pub mod bootstrap;

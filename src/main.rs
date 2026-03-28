@@ -168,6 +168,9 @@ enum Commands {
     /// Validate a NixOS AMI before Packer snapshots it
     AmiTest(commands::ami_test::AmiTestArgs),
 
+    /// Validate full boot orchestration (VPN + K3s + kubectl) on a test instance
+    AmiIntegrationTest(commands::ami_integration_test::AmiIntegrationTestArgs),
+
     /// Read cloud userdata, extract cluster config, and bootstrap the node
     Init(commands::init::InitArgs),
 
@@ -333,6 +336,7 @@ fn main() -> anyhow::Result<()> {
         },
         Commands::AmiBuild(args) => commands::ami_build::run(args),
         Commands::AmiTest(args) => commands::ami_test::run(args),
+        Commands::AmiIntegrationTest(args) => commands::ami_integration_test::run(args),
         Commands::Init(args) => commands::init::run(args),
         Commands::Report {
             format,

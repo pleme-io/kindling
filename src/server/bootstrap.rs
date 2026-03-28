@@ -296,23 +296,47 @@ pub fn run(config_path: &Path) -> Result<()> {
         state.transition(BootstrapPhase::IdentityWritten)?;
     }
 
-    // Phase: NixOS rebuild
+    // Phase: NixOS rebuild (or skip + manual K3s start for AMI integration tests)
     if state.phase == BootstrapPhase::IdentityWritten {
-        println!("{} Running nixos-rebuild switch", ">>".blue().bold());
-        state.transition(BootstrapPhase::NixRebuildRunning)?;
+        let config = ClusterConfig::load(config_path)?;
+        if config.skip_nix_rebuild == Some(true) {
+            println!(
+                "{} Skipping nixos-rebuild (skip_nix_rebuild=true)",
+                "::".blue().bold()
+            );
+            state.transition(BootstrapPhase::NixRebuildRunning)?;
 
-        let identity_path = NodeIdentity::server_path();
-        match apply::run_rebuild_from_path(&identity_path) {
-            Ok(()) => {
-                println!(
-                    "{} NixOS rebuild completed successfully",
-                    "ok".green().bold()
-                );
-                state.transition(BootstrapPhase::NixRebuildComplete)?;
+            // The AMI already has the full NixOS config from the build phase.
+            // We just need to start K3s (stopped in ConfigLoaded phase) with
+            // the secrets provisioned in SecretsProvisioned phase.
+            println!("{} Starting K3s service directly", ">>".blue().bold());
+            let k3s_status = std::process::Command::new("systemctl")
+                .args(["start", "k3s.service"])
+                .status()
+                .context("failed to start k3s.service")?;
+            if !k3s_status.success() {
+                state.fail("systemctl start k3s.service failed")?;
+                bail!("failed to start K3s service (exit {})", k3s_status);
             }
-            Err(e) => {
-                state.fail(&e.to_string())?;
-                bail!("nixos-rebuild failed: {}", e);
+            println!("{} K3s service started", "ok".green().bold());
+            state.transition(BootstrapPhase::NixRebuildComplete)?;
+        } else {
+            println!("{} Running nixos-rebuild switch", ">>".blue().bold());
+            state.transition(BootstrapPhase::NixRebuildRunning)?;
+
+            let identity_path = NodeIdentity::server_path();
+            match apply::run_rebuild_from_path(&identity_path) {
+                Ok(()) => {
+                    println!(
+                        "{} NixOS rebuild completed successfully",
+                        "ok".green().bold()
+                    );
+                    state.transition(BootstrapPhase::NixRebuildComplete)?;
+                }
+                Err(e) => {
+                    state.fail(&e.to_string())?;
+                    bail!("nixos-rebuild failed: {}", e);
+                }
             }
         }
     }
