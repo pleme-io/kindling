@@ -178,13 +178,15 @@ fn check_wireguard_tools() -> TestResult {
 
 fn check_nix_daemon() -> TestResult {
     let start = Instant::now();
-    let (passed, message) = match run_cmd("systemctl", &["is-active", "nix-daemon.service"]) {
+    // Check is-enabled (will start on boot) rather than is-active
+    // (may be stopped after ami-build cleanup)
+    let (passed, message) = match run_cmd("systemctl", &["is-enabled", "nix-daemon.service"]) {
         Ok(out) => {
             let trimmed = out.trim().to_string();
-            if trimmed == "active" {
-                (true, "active".into())
+            if trimmed == "enabled" {
+                (true, "enabled".into())
             } else {
-                (false, format!("expected 'active', got '{}'", trimmed))
+                (false, format!("expected 'enabled', got '{trimmed}'"))
             }
         }
         Err(e) => (false, e),
