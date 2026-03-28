@@ -178,18 +178,18 @@ fn check_wireguard_tools() -> TestResult {
 
 fn check_nix_daemon() -> TestResult {
     let start = Instant::now();
-    // Check is-enabled (will start on boot) rather than is-active
-    // (may be stopped after ami-build cleanup)
-    let (passed, message) = match run_cmd("systemctl", &["is-enabled", "nix-daemon.service"]) {
-        Ok(out) => {
-            let trimmed = out.trim().to_string();
-            if trimmed == "enabled" {
-                (true, "enabled".into())
-            } else {
-                (false, format!("expected 'enabled', got '{trimmed}'"))
-            }
+    // NixOS uses nix-daemon.socket (socket activation) not nix-daemon.service directly.
+    // Check that either the socket or the service is enabled.
+    let (passed, message) = {
+        let socket_ok = run_cmd("systemctl", &["is-enabled", "nix-daemon.socket"])
+            .map(|s| s.trim() == "enabled").unwrap_or(false);
+        let service_ok = run_cmd("systemctl", &["is-enabled", "nix-daemon.service"])
+            .map(|s| s.trim() == "enabled").unwrap_or(false);
+        if socket_ok || service_ok {
+            (true, if socket_ok { "socket enabled" } else { "service enabled" }.into())
+        } else {
+            (false, "neither nix-daemon.socket nor nix-daemon.service is enabled".into())
         }
-        Err(e) => (false, e),
     };
     TestResult {
         name: "nix-daemon".into(),
