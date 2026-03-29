@@ -673,8 +673,9 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
         let _ = std::process::Command::new("systemctl")
             .args(["mask", "k3s.service"])
             .status();
+        // --now starts the service immediately (not just on next boot)
         let _ = std::process::Command::new("systemctl")
-            .args(["enable", "k3s-agent.service"])
+            .args(["enable", "--now", "k3s-agent.service"])
             .status();
         println!(
             "{} K3s agent mode: masked k3s.service, enabled k3s-agent.service",
