@@ -58,6 +58,19 @@ The unified cloud bootstrap entry point. Runs as `kindling-init.service` (system
 4. Write to `/etc/pangea/cluster-config.json` with mode 0640
 5. Delegate to the bootstrap state machine
 
+#### Dual-Sentinel Role Selection
+
+kindling-init writes a sentinel file to select the K3s role for this node:
+
+- `/var/lib/kindling/server-mode` -- server role (k3s.service)
+- `/var/lib/kindling/agent-mode` -- agent role (k3s-agent.service)
+
+The blackmatter-kubernetes K3s NixOS module uses systemd `ConditionPathExists`
+on these files: `k3s.service` starts only if `server-mode` exists,
+`k3s-agent.service` starts only if `agent-mode` exists. If neither exists
+(e.g. during AMI build), neither K3s service starts. This replaces the old
+`systemctl mask/enable` approach which raced with systemd ordering.
+
 ### Bootstrap State Machine (14 phases)
 
 ```
@@ -68,7 +81,8 @@ FluxcdBootstrapping → FluxcdReady → Complete
 ```
 
 State persists to `/var/lib/kindling/server-state.json` -- re-running resumes
-from the last good phase.
+from the last good phase. The role sentinel file (see above) is written during
+the `write_k3s_runtime_config` step within the K3s config generation phase.
 
 ---
 
