@@ -521,7 +521,6 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
     // when multiple interfaces exist (e.g., VPN wg-test + eth0).
     if let Ok(node_ip) = get_vpc_private_ip() {
         lines.push(format!("node-ip: \"{}\"", node_ip));
-        lines.push("flannel-iface: eth0".to_string());
     }
 
     // TLS SANs
