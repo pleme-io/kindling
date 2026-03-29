@@ -517,8 +517,6 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
     }
 
     // Node IP from IMDS — ensures K3s binds to the correct VPC interface.
-    // Without this, K3s may fail with "failed to find interface with specified node ip"
-    // when multiple interfaces exist (e.g., VPN wg-test + eth0).
     if let Ok(node_ip) = get_vpc_private_ip() {
         lines.push(format!("node-ip: \"{}\"", node_ip));
         // Discover which interface has this IP — Flannel needs explicit iface
@@ -527,6 +525,12 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
             lines.push(format!("flannel-iface: \"{}\"", iface));
         }
     }
+
+    // Disable network policy controller — it crashes intermittently when
+    // WireGuard interfaces are present alongside Flannel. The controller
+    // re-evaluates interfaces on restart and fails to find the node IP.
+    // Network policies can be provided by Cilium/Calico if needed.
+    lines.push("disable-network-policy: true".to_string());
 
     // TLS SANs
     if let Some(ref k3s) = config.k3s {
