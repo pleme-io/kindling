@@ -57,7 +57,25 @@ pub fn run(diff_only: bool) -> Result<()> {
 /// Run a full rebuild from a node.yaml path.
 ///
 /// Shared entry point used by both `kindling apply` and `kindling server bootstrap`.
+/// The optional `context` label is printed before the rebuild command for traceability
+/// (e.g. the bootstrap phase name).
 pub fn run_rebuild_from_path(node_path: &std::path::Path) -> Result<()> {
+    run_rebuild_from_path_with_context(node_path, None)
+}
+
+/// Like [`run_rebuild_from_path`] but with an optional context label printed
+/// before the rebuild command (e.g. `"[bootstrap: nix_rebuild_running]"`).
+pub fn run_rebuild_from_path_with_context(
+    node_path: &std::path::Path,
+    context: Option<&str>,
+) -> Result<()> {
+    if let Some(ctx) = context {
+        println!(
+            "{} Bootstrap phase: {}",
+            "::".blue().bold(),
+            ctx,
+        );
+    }
     let identity = node_identity::NodeIdentity::load(node_path)?;
     let gen_dir = nix_gen::generate(&identity)?;
     run_rebuild(&identity, &gen_dir)
@@ -89,24 +107,28 @@ fn run_rebuild(identity: &node_identity::NodeIdentity, gen_dir: &std::path::Path
         }
     }
 
-    println!(
-        "{} Running: {} {}",
-        ">>".blue().bold(),
-        cmd,
-        args.join(" ")
-    );
-
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     // On NixOS, wrap in systemd-run --scope so switch-to-configuration doesn't
     // SIGTERM the calling service (kindling-init) when activating the new config.
     let status = if !is_darwin {
         let mut scope_args = vec!["--scope", "--", cmd];
         scope_args.extend(arg_refs.iter());
+        println!(
+            "{} Running: systemd-run {}",
+            ">>".blue().bold(),
+            scope_args.join(" ")
+        );
         Command::new("systemd-run")
             .args(&scope_args)
             .status()
             .with_context(|| format!("failed to run systemd-run --scope -- {cmd}"))?
     } else {
+        println!(
+            "{} Running: {} {}",
+            ">>".blue().bold(),
+            cmd,
+            args.join(" ")
+        );
         Command::new(cmd)
             .args(&arg_refs)
             .status()

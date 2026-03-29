@@ -407,21 +407,60 @@ pub fn run(config_path: &Path) -> Result<()> {
             state.transition(BootstrapPhase::NixRebuildRunning)?;
 
             let identity_path = NodeIdentity::server_path();
-            match apply::run_rebuild_from_path(&identity_path) {
-                Ok(()) => {
+            const MAX_REBUILD_ATTEMPTS: u32 = 3;
+            const REBUILD_RETRY_DELAY: Duration = Duration::from_secs(30);
+            let mut last_error = String::new();
+            let mut succeeded = false;
+
+            for attempt in 1..=MAX_REBUILD_ATTEMPTS {
+                if attempt > 1 {
                     println!(
-                        "{} NixOS rebuild completed successfully",
-                        "ok".green().bold()
+                        "{} Retrying nixos-rebuild (attempt {}/{}), waiting {}s",
+                        ">>".blue().bold(),
+                        attempt,
+                        MAX_REBUILD_ATTEMPTS,
+                        REBUILD_RETRY_DELAY.as_secs(),
                     );
-                    state.transition(BootstrapPhase::NixRebuildComplete)?;
-                    if test_mode {
-                        tag_instance_phase("nix_rebuild_complete");
+                    std::thread::sleep(REBUILD_RETRY_DELAY);
+                }
+
+                match apply::run_rebuild_from_path_with_context(
+                    &identity_path,
+                    Some(&format!("nix_rebuild_running (attempt {}/{})", attempt, MAX_REBUILD_ATTEMPTS)),
+                ) {
+                    Ok(()) => {
+                        println!(
+                            "{} NixOS rebuild completed successfully",
+                            "ok".green().bold()
+                        );
+                        succeeded = true;
+                        break;
+                    }
+                    Err(e) => {
+                        last_error = e.to_string();
+                        println!(
+                            "{} nixos-rebuild attempt {}/{} failed: {}",
+                            "!!".yellow().bold(),
+                            attempt,
+                            MAX_REBUILD_ATTEMPTS,
+                            last_error,
+                        );
                     }
                 }
-                Err(e) => {
-                    state.fail(&e.to_string())?;
-                    bail!("nixos-rebuild failed: {}", e);
+            }
+
+            if succeeded {
+                state.transition(BootstrapPhase::NixRebuildComplete)?;
+                if test_mode {
+                    tag_instance_phase("nix_rebuild_complete");
                 }
+            } else {
+                state.fail(&last_error)?;
+                bail!(
+                    "nixos-rebuild failed after {} attempts: {}",
+                    MAX_REBUILD_ATTEMPTS,
+                    last_error,
+                );
             }
         }
     }
