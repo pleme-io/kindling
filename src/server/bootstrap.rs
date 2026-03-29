@@ -262,6 +262,25 @@ pub fn run(config_path: &Path) -> Result<()> {
             "{} Fast-starting WireGuard (before nixos-rebuild)",
             ">>".blue().bold()
         );
+
+        // Open firewall for WireGuard listen ports BEFORE bringing up interfaces.
+        // NixOS firewall blocks incoming UDP by default. Without nixos-rebuild,
+        // the only way to open ports is via iptables directly.
+        if let Some(ref vpn) = config.vpn {
+            for link in &vpn.links {
+                if let Some(port) = link.listen_port {
+                    let _ = std::process::Command::new("iptables")
+                        .args(["-I", "INPUT", "-p", "udp", "--dport", &port.to_string(), "-j", "ACCEPT"])
+                        .status();
+                    println!(
+                        "{} Opened UDP port {} in firewall for WireGuard",
+                        "ok".green().bold(),
+                        port
+                    );
+                }
+            }
+        }
+
         match wireguard_fast::fast_start(&config) {
             Ok(()) => {
                 println!(
