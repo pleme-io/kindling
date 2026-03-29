@@ -665,56 +665,20 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
         content.len()
     );
 
-    // If role is "agent", write a systemd drop-in to override k3s server → k3s agent.
-    // The NixOS K3s module bakes `k3s server` into ExecStart. Agents need `k3s agent`.
+    // If role is "agent", mask k3s.service (server) and enable k3s-agent.service.
+    // The AMI includes both services via the NixOS module; only one should run.
+    // Previous approach used a systemd drop-in in /run/systemd/system, but NixOS's
+    // read-only /etc/systemd/system takes priority. Using mask+enable is reliable.
     if config.role == "agent" {
-        // Use /run/systemd/system (runtime writable) — /etc/systemd/system is
-        // read-only on NixOS (managed by the Nix store).
-        let dropin_dir = Path::new("/run/systemd/system/k3s.service.d");
-        let dropin_path = dropin_dir.join("override-agent.conf");
-        std::fs::create_dir_all(dropin_dir)
-            .with_context(|| format!("failed to create {}", dropin_dir.display()))?;
-
-        // Find the actual k3s binary path (NixOS uses /nix/store/...-k3s-.../bin/k3s)
-        let k3s_path = std::process::Command::new("which")
-            .arg("k3s")
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_else(|_| "/run/current-system/sw/bin/k3s".to_string());
-        let k3s_bin = if k3s_path.is_empty() { "/run/current-system/sw/bin/k3s" } else { &k3s_path };
-
-        // ExecStart= (empty) clears the previous ExecStart, then sets the new one.
-        let dropin_content = format!("[Service]\nExecStart=\nExecStart={k3s_bin} agent --config /etc/rancher/k3s/config.yaml\n");
-        std::fs::write(&dropin_path, dropin_content)
-            .with_context(|| format!("failed to write {}", dropin_path.display()))?;
-
-        // Reload systemd to pick up the drop-in
-        match std::process::Command::new("systemctl")
-            .args(["daemon-reload"])
-            .output()
-        {
-            Ok(output) if !output.status.success() => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                println!(
-                    "{} systemctl daemon-reload failed (non-fatal): {}",
-                    "!!".yellow().bold(),
-                    stderr.trim()
-                );
-            }
-            Err(e) => {
-                println!(
-                    "{} systemctl not found (non-fatal): {}",
-                    "!!".yellow().bold(),
-                    e
-                );
-            }
-            _ => {}
-        }
-
+        let _ = std::process::Command::new("systemctl")
+            .args(["mask", "k3s.service"])
+            .status();
+        let _ = std::process::Command::new("systemctl")
+            .args(["enable", "k3s-agent.service"])
+            .status();
         println!(
-            "{} K3s agent mode drop-in written: {} agent --config config.yaml",
-            "ok".green().bold(),
-            k3s_bin
+            "{} K3s agent mode: masked k3s.service, enabled k3s-agent.service",
+            "ok".green().bold()
         );
     }
 
