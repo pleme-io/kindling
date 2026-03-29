@@ -521,7 +521,9 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
     // If role is "agent", write a systemd drop-in to override k3s server → k3s agent.
     // The NixOS K3s module bakes `k3s server` into ExecStart. Agents need `k3s agent`.
     if config.role == "agent" {
-        let dropin_dir = Path::new("/etc/systemd/system/k3s.service.d");
+        // Use /run/systemd/system (runtime writable) — /etc/systemd/system is
+        // read-only on NixOS (managed by the Nix store).
+        let dropin_dir = Path::new("/run/systemd/system/k3s.service.d");
         let dropin_path = dropin_dir.join("override-agent.conf");
         std::fs::create_dir_all(dropin_dir)
             .with_context(|| format!("failed to create {}", dropin_dir.display()))?;
