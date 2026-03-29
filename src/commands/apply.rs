@@ -97,10 +97,21 @@ fn run_rebuild(identity: &node_identity::NodeIdentity, gen_dir: &std::path::Path
     );
 
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let status = Command::new(cmd)
-        .args(&arg_refs)
-        .status()
-        .with_context(|| format!("failed to run {cmd}"))?;
+    // On NixOS, wrap in systemd-run --scope so switch-to-configuration doesn't
+    // SIGTERM the calling service (kindling-init) when activating the new config.
+    let status = if !is_darwin {
+        let mut scope_args = vec!["--scope", "--", cmd];
+        scope_args.extend(arg_refs.iter());
+        Command::new("systemd-run")
+            .args(&scope_args)
+            .status()
+            .with_context(|| format!("failed to run systemd-run --scope -- {cmd}"))?
+    } else {
+        Command::new(cmd)
+            .args(&arg_refs)
+            .status()
+            .with_context(|| format!("failed to run {cmd}"))?
+    };
 
     if status.success() {
         println!();
