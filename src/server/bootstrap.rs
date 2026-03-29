@@ -665,20 +665,28 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
         content.len()
     );
 
-    // If role is "agent", mask k3s.service (server) and enable k3s-agent.service.
-    // The AMI includes both services via the NixOS module; only one should run.
-    // Previous approach used a systemd drop-in in /run/systemd/system, but NixOS's
-    // read-only /etc/systemd/system takes priority. Using mask+enable is reliable.
-    if config.role == "agent" {
-        let _ = std::process::Command::new("systemctl")
-            .args(["mask", "k3s.service"])
-            .status();
-        // --now starts the service immediately (not just on next boot)
-        let _ = std::process::Command::new("systemctl")
-            .args(["enable", "--now", "k3s-agent.service"])
-            .status();
+    // Write role sentinel file for systemd ConditionPathExists-based role selection.
+    // k3s.service has ConditionPathExists=/var/lib/kindling/server-mode (starts if exists).
+    // k3s-agent.service has ConditionPathExists=!/var/lib/kindling/server-mode (starts if absent).
+    // Both services are in wantedBy=multi-user.target and ordered After=kindling-init.
+    // Systemd evaluates conditions at execution time, after ordering — no race.
+    let sentinel = std::path::Path::new("/var/lib/kindling/server-mode");
+    if config.role == "server" {
+        if let Some(parent) = sentinel.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(sentinel, "server")
+            .with_context(|| format!("failed to write sentinel {}", sentinel.display()))?;
         println!(
-            "{} K3s agent mode: masked k3s.service, enabled k3s-agent.service",
+            "{} Server mode: wrote sentinel {}",
+            "ok".green().bold(),
+            sentinel.display()
+        );
+    } else {
+        // Agent mode: remove sentinel so k3s-agent.service starts instead of k3s.service
+        let _ = std::fs::remove_file(sentinel);
+        println!(
+            "{} Agent mode: removed sentinel (k3s-agent.service will start)",
             "ok".green().bold()
         );
     }
