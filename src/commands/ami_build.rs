@@ -29,9 +29,18 @@ pub struct AmiBuildArgs {
     /// Skip AMI validation checks
     #[arg(long)]
     pub skip_validation: bool,
+
+    /// Attic binary cache URL (e.g., http://10.0.1.5:8080/nexus).
+    /// When set, adds extra-substituters to nixos-rebuild so packages
+    /// are fetched from the Attic cache before building from source.
+    #[arg(long)]
+    pub attic_url: Option<String>,
 }
 
 pub fn run(args: AmiBuildArgs) -> Result<()> {
+    // Fall back to ATTIC_URL env var if --attic-url not provided
+    let attic_url = args.attic_url.or_else(|| std::env::var("ATTIC_URL").ok());
+
     let total_phases = if args.skip_rebuild { 3 } else { 5 };
     let mut phase = 0;
 
@@ -70,6 +79,24 @@ pub fn run(args: AmiBuildArgs) -> Result<()> {
                 "access-tokens".to_string(),
                 format!("github.com={github_token}"),
             ]);
+        }
+
+        // Use Attic binary cache as an extra substituter when available.
+        // require-sigs=false because the ephemeral Attic server generates a
+        // fresh JWT key on each boot -- safe since it's on a private VPC and
+        // only lives for the duration of the pipeline.
+        if let Some(ref url) = attic_url {
+            rebuild_args.extend([
+                "--option".to_string(),
+                "extra-substituters".to_string(),
+                url.clone(),
+            ]);
+            rebuild_args.extend([
+                "--option".to_string(),
+                "require-sigs".to_string(),
+                "false".to_string(),
+            ]);
+            println!("[phase:{phase}/{total_phases}] Using Attic cache: {url}");
         }
 
         let status = Command::new("nixos-rebuild")
