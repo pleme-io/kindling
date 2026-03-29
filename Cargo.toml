@@ -42,7 +42,7 @@ async-graphql = { version = "7.0", features = ["tracing", "chrono"] }
 async-graphql-axum = "7.0"
 
 # HTTP client (telemetry)
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking"], default-features = false }
 
 # Hashing
 sha2 = "0.10"

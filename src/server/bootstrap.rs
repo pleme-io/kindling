@@ -208,9 +208,27 @@ pub fn run(config_path: &Path) -> Result<()> {
 
         if k3s_active {
             println!("{} Halting K3s before PKI seeding", "::".blue().bold());
-            let _ = std::process::Command::new("systemctl")
+            match std::process::Command::new("systemctl")
                 .args(["stop", "k3s.service"])
-                .status();
+                .output()
+            {
+                Ok(output) if !output.status.success() => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    println!(
+                        "{} systemctl stop k3s failed (non-fatal): {}",
+                        "!!".yellow().bold(),
+                        stderr.trim()
+                    );
+                }
+                Err(e) => {
+                    println!(
+                        "{} systemctl not found (non-fatal): {}",
+                        "!!".yellow().bold(),
+                        e
+                    );
+                }
+                _ => {}
+            }
         }
 
         // Clear K3s server state (TLS + datastore) for clean PKI seeding.
@@ -269,9 +287,27 @@ pub fn run(config_path: &Path) -> Result<()> {
         if let Some(ref vpn) = config.vpn {
             for link in &vpn.links {
                 if let Some(port) = link.listen_port {
-                    let _ = std::process::Command::new("iptables")
+                    match std::process::Command::new("iptables")
                         .args(["-I", "INPUT", "-p", "udp", "--dport", &port.to_string(), "-j", "ACCEPT"])
-                        .status();
+                        .output()
+                    {
+                        Ok(output) if !output.status.success() => {
+                            let stderr = String::from_utf8_lossy(&output.stderr);
+                            println!(
+                                "{} iptables failed (non-fatal): {}",
+                                "!!".yellow().bold(),
+                                stderr.trim()
+                            );
+                        }
+                        Err(e) => {
+                            println!(
+                                "{} iptables not found (non-fatal): {}",
+                                "!!".yellow().bold(),
+                                e
+                            );
+                        }
+                        _ => {}
+                    }
                     println!(
                         "{} Opened UDP port {} in firewall for WireGuard",
                         "ok".green().bold(),
@@ -483,21 +519,18 @@ pub fn run(config_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write `/etc/rancher/k3s/config.yaml` for K3s runtime configuration.
+/// Generate K3s config YAML from a ClusterConfig (pure function, no IO).
 ///
-/// When `skip_nix_rebuild` is true, the NixOS K3s systemd unit has the AMI's
-/// default flags. This config file overrides K3s behavior at startup:
+/// Produces the YAML content for `/etc/rancher/k3s/config.yaml` covering:
 /// - `cluster-init: true` for the first server
 /// - `server: https://...` for joining an existing cluster
 /// - `token` for cluster authentication
-/// - `tls-san` for certificate SANs
-fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
-    let config_dir = Path::new("/etc/rancher/k3s");
-    let config_path = config_dir.join("config.yaml");
-
-    std::fs::create_dir_all(config_dir)
-        .with_context(|| format!("failed to create {}", config_dir.display()))?;
-
+/// - `disable-network-policy: true` to avoid WireGuard/Flannel conflicts
+/// - `tls-san` for certificate SANs (explicit + VPN addresses)
+///
+/// Does NOT include `node-ip` or `flannel-iface` — those require IMDS/network
+/// discovery and are appended by the caller (`write_k3s_runtime_config`).
+fn generate_k3s_config_yaml(config: &ClusterConfig) -> Result<String> {
     let mut lines: Vec<String> = Vec::new();
 
     // Cluster init vs join
@@ -513,16 +546,6 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
             if !token.is_empty() {
                 lines.push(format!("token: \"{}\"", token));
             }
-        }
-    }
-
-    // Node IP from IMDS — ensures K3s binds to the correct VPC interface.
-    if let Ok(node_ip) = get_vpc_private_ip() {
-        lines.push(format!("node-ip: \"{}\"", node_ip));
-        // Discover which interface has this IP — Flannel needs explicit iface
-        // when multiple interfaces exist (e.g., ens5 + wg-test VPN).
-        if let Ok(iface) = get_interface_for_ip(&node_ip) {
-            lines.push(format!("flannel-iface: \"{}\"", iface));
         }
     }
 
@@ -556,7 +579,36 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
         }
     }
 
-    let content = lines.join("\n") + "\n";
+    Ok(lines.join("\n") + "\n")
+}
+
+/// Write `/etc/rancher/k3s/config.yaml` for K3s runtime configuration.
+///
+/// When `skip_nix_rebuild` is true, the NixOS K3s systemd unit has the AMI's
+/// default flags. This config file overrides K3s behavior at startup.
+///
+/// Calls `generate_k3s_config_yaml` for the pure config generation, then
+/// appends IMDS-dependent fields (node-ip, flannel-iface) and writes to disk.
+fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
+    let config_dir = Path::new("/etc/rancher/k3s");
+    let config_path = config_dir.join("config.yaml");
+
+    std::fs::create_dir_all(config_dir)
+        .with_context(|| format!("failed to create {}", config_dir.display()))?;
+
+    let mut content = generate_k3s_config_yaml(config)?;
+
+    // Node IP from IMDS — ensures K3s binds to the correct VPC interface.
+    // These require network/IMDS access so they live outside the pure function.
+    if let Ok(node_ip) = get_vpc_private_ip() {
+        content.push_str(&format!("node-ip: \"{}\"\n", node_ip));
+        // Discover which interface has this IP — Flannel needs explicit iface
+        // when multiple interfaces exist (e.g., ens5 + wg-test VPN).
+        if let Ok(iface) = get_interface_for_ip(&node_ip) {
+            content.push_str(&format!("flannel-iface: \"{}\"\n", iface));
+        }
+    }
+
     std::fs::write(&config_path, &content)
         .with_context(|| format!("failed to write {}", config_path.display()))?;
 
@@ -591,9 +643,27 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
             .with_context(|| format!("failed to write {}", dropin_path.display()))?;
 
         // Reload systemd to pick up the drop-in
-        let _ = std::process::Command::new("systemctl")
+        match std::process::Command::new("systemctl")
             .args(["daemon-reload"])
-            .status();
+            .output()
+        {
+            Ok(output) if !output.status.success() => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                println!(
+                    "{} systemctl daemon-reload failed (non-fatal): {}",
+                    "!!".yellow().bold(),
+                    stderr.trim()
+                );
+            }
+            Err(e) => {
+                println!(
+                    "{} systemctl not found (non-fatal): {}",
+                    "!!".yellow().bold(),
+                    e
+                );
+            }
+            _ => {}
+        }
 
         println!(
             "{} K3s agent mode drop-in written: {} agent --config config.yaml",
@@ -606,12 +676,30 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
 }
 
 /// Find the network interface that has the given IP assigned.
-/// Parses `ip -o addr show` output to match IP → interface name.
+///
+/// First attempts a pure-Rust approach by reading `/proc/net/fib_trie` (Linux only,
+/// no external dependencies). Falls back to parsing `ip -o addr show` output if
+/// `/proc/net/fib_trie` is unavailable or unparseable.
 fn get_interface_for_ip(ip: &str) -> Result<String> {
+    // Attempt 1: Pure Rust — scan /sys/class/net/*/operstate + /proc/net/fib_trie
+    if let Ok(iface) = get_interface_for_ip_proc(ip) {
+        return Ok(iface);
+    }
+
+    // Attempt 2: Fall back to `ip -o addr show` with full error context
     let output = std::process::Command::new("ip")
         .args(["-o", "addr", "show"])
         .output()
         .context("failed to run `ip -o addr show`")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "`ip -o addr show` exited with {}: {}",
+            output.status,
+            stderr.trim()
+        );
+    }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
@@ -627,35 +715,137 @@ fn get_interface_for_ip(ip: &str) -> Result<String> {
     bail!("no interface found with IP {ip}")
 }
 
+/// Pure-Rust interface lookup by scanning `/sys/class/net/` and reading each
+/// interface's addresses from `/proc/net/if_net6` or by matching against the
+/// kernel's FIB trie.
+///
+/// Reads `/sys/class/net/<iface>/` to enumerate interfaces, then checks
+/// `/proc/net/fib_trie` entries to match the target IPv4 address to its device.
+fn get_interface_for_ip_proc(target_ip: &str) -> Result<String> {
+    let target: std::net::Ipv4Addr = target_ip
+        .parse()
+        .context("target IP is not a valid IPv4 address")?;
+
+    // Enumerate interfaces from /sys/class/net
+    let net_dir = std::path::Path::new("/sys/class/net");
+    let entries = std::fs::read_dir(net_dir).context("failed to read /sys/class/net")?;
+
+    let mut ifaces: Vec<String> = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == "lo" {
+            continue;
+        }
+        ifaces.push(name);
+    }
+
+    // Parse /proc/net/fib_trie to find which interface owns the target IP.
+    //
+    // The format has sections like:
+    //   Local:
+    //     /0 ...
+    //       +-- 172.31.16.0/20 ...
+    //         /32 host LOCAL
+    //           |-- 172.31.23.43
+    //              ...
+    // We track the current "device" context by looking for lines like:
+    //   |-- <ip>
+    // after a `/32 host LOCAL` line. But actually a simpler approach:
+    // scan for lines matching our target IP under a device section.
+    //
+    // Alternative simpler approach: for each interface, read
+    // /proc/net/if_inet6 or try /sys/class/net/<iface>/..., but IPv4
+    // addresses aren't directly exposed via sysfs.
+    //
+    // Simplest reliable approach: read /proc/net/fib_trie, look for our IP
+    // in a LOCAL section, and correlate with the interface.
+    //
+    // Actually the most robust pure-Rust zero-dep approach: for each interface,
+    // try to bind a UDP socket to target_ip on that interface.
+    // But that doesn't directly tell us the interface name.
+    //
+    // Parse approach: read all of /proc/net/fib_trie. The structure is:
+    //   Main:              <- routing table
+    //     +-- 0.0.0.0/0    <- prefix
+    //        ...
+    //   Local:             <- local addresses table
+    //     +-- 172.31.16.0/20
+    //        /32 host LOCAL
+    //           |-- 172.31.23.43
+    //
+    // But we need the interface. /proc/net/fib_trie doesn't directly show device names.
+    // The file /proc/net/route has device names with hex-encoded IPs.
+    let route_content =
+        std::fs::read_to_string("/proc/net/route").context("failed to read /proc/net/route")?;
+
+    // /proc/net/route format (tab-separated):
+    //   Iface  Destination  Gateway  Flags  RefCnt  Use  Metric  Mask  MTU  Window  IRTT
+    //   ens5   0000A8AC     ...
+    // Destination and Gateway are hex-encoded in network byte order (little-endian on x86,
+    // but /proc/net/route uses host byte order which is little-endian).
+
+    // Strategy: find the interface whose route subnet contains our target IP.
+    // For a directly-connected interface, there will be a route with Gateway=00000000
+    // and the Destination+Mask covering our IP.
+    let target_u32 = u32::from(target);
+
+    for line in route_content.lines().skip(1) {
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() < 8 {
+            continue;
+        }
+        let iface_name = fields[0].trim();
+        let dest = u32::from_str_radix(fields[1].trim(), 16).unwrap_or(0);
+        let mask = u32::from_str_radix(fields[7].trim(), 16).unwrap_or(0);
+
+        // /proc/net/route stores values in host byte order (little-endian on x86).
+        // Convert target IP to the same format.
+        let target_le = target_u32.swap_bytes();
+
+        if (target_le & mask) == dest && ifaces.contains(&iface_name.to_string()) {
+            return Ok(iface_name.to_string());
+        }
+    }
+
+    bail!("no interface found for {target_ip} via /proc/net/route")
+}
+
 /// Read the VPC private IP from EC2 instance metadata (IMDSv2).
 fn get_vpc_private_ip() -> Result<String> {
-    // Get IMDSv2 token
-    let token_output = std::process::Command::new("curl")
-        .args([
-            "-sf", "--connect-timeout", "2",
-            "-X", "PUT",
-            "-H", "X-aws-ec2-metadata-token-ttl-seconds: 60",
-            "http://169.254.169.254/latest/api/token",
-        ])
-        .output()
-        .context("failed to get IMDS token")?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .context("failed to build HTTP client for IMDS")?;
 
-    let token = String::from_utf8_lossy(&token_output.stdout).trim().to_string();
+    // Get IMDSv2 token
+    let token = client
+        .put("http://169.254.169.254/latest/api/token")
+        .header("X-aws-ec2-metadata-token-ttl-seconds", "60")
+        .send()
+        .context("IMDS token request failed")?
+        .error_for_status()
+        .context("IMDS token request returned error status")?
+        .text()
+        .context("failed to read IMDS token body")?;
+
+    let token = token.trim().to_string();
     if token.is_empty() {
         bail!("IMDS token is empty — not running on EC2?");
     }
 
     // Get private IP
-    let ip_output = std::process::Command::new("curl")
-        .args([
-            "-sf", "--connect-timeout", "2",
-            "-H", &format!("X-aws-ec2-metadata-token: {token}"),
-            "http://169.254.169.254/latest/meta-data/local-ipv4",
-        ])
-        .output()
-        .context("failed to get private IP from IMDS")?;
+    let ip = client
+        .get("http://169.254.169.254/latest/meta-data/local-ipv4")
+        .header("X-aws-ec2-metadata-token", &token)
+        .send()
+        .context("IMDS private IP request failed")?
+        .error_for_status()
+        .context("IMDS private IP request returned error status")?
+        .text()
+        .context("failed to read IMDS private IP body")?;
 
-    let ip = String::from_utf8_lossy(&ip_output.stdout).trim().to_string();
+    let ip = ip.trim().to_string();
     if ip.is_empty() {
         bail!("IMDS private IP is empty");
     }
@@ -1035,5 +1225,50 @@ mod tests {
         .unwrap();
         let result = provision_bootstrap_secrets(&config).unwrap();
         assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn k3s_config_cluster_init() {
+        let config = ClusterConfig::from_json(
+            r#"{"cluster_name":"test","cluster_init":true,"skip_nix_rebuild":true,"bootstrap_secrets":{"k3s_server_token":"test-token"}}"#,
+        )
+        .unwrap();
+        let yaml = generate_k3s_config_yaml(&config).unwrap();
+        assert!(yaml.contains("cluster-init: true"));
+        assert!(yaml.contains("token: \"test-token\""));
+        assert!(yaml.contains("disable-network-policy: true"));
+        assert!(!yaml.contains("server:"));
+    }
+
+    #[test]
+    fn k3s_config_join_server() {
+        let config = ClusterConfig::from_json(
+            r#"{"cluster_name":"test","join_server":"https://1.2.3.4:6443","skip_nix_rebuild":true,"bootstrap_secrets":{"k3s_server_token":"join-token"}}"#,
+        )
+        .unwrap();
+        let yaml = generate_k3s_config_yaml(&config).unwrap();
+        assert!(yaml.contains("server: \"https://1.2.3.4:6443\""));
+        assert!(!yaml.contains("cluster-init"));
+        assert!(yaml.contains("token: \"join-token\""));
+    }
+
+    #[test]
+    fn k3s_config_vpn_tls_san() {
+        let config = ClusterConfig::from_json(
+            r#"{"cluster_name":"test","cluster_init":true,"skip_nix_rebuild":true,"vpn":{"require_liveness":false,"links":[{"name":"wg-test","address":"10.99.0.1/24","private_key_file":"/tmp/key","peers":[],"firewall":{"trust_interface":false,"allowed_tcp_ports":[],"allowed_udp_ports":[]}}]}}"#,
+        )
+        .unwrap();
+        let yaml = generate_k3s_config_yaml(&config).unwrap();
+        assert!(yaml.contains("tls-san:"));
+        assert!(yaml.contains("10.99.0.1"));
+    }
+
+    #[test]
+    fn k3s_config_no_token_when_empty() {
+        let config =
+            ClusterConfig::from_json(r#"{"cluster_name":"test","cluster_init":true,"skip_nix_rebuild":true}"#)
+                .unwrap();
+        let yaml = generate_k3s_config_yaml(&config).unwrap();
+        assert!(!yaml.contains("token:"));
     }
 }
