@@ -107,6 +107,8 @@ in {
         nixos-rebuild
         wireguard-tools
         iproute2
+        iptables
+        curl
       ];
     };
 
