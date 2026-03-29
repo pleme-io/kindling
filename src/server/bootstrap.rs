@@ -532,13 +532,27 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
     // Network policies can be provided by Cilium/Calico if needed.
     lines.push("disable-network-policy: true".to_string());
 
-    // TLS SANs
+    // TLS SANs — include VPN addresses so K3s cert is valid for VPN connections
+    let mut sans: Vec<String> = Vec::new();
     if let Some(ref k3s) = config.k3s {
-        if !k3s.tls_san.is_empty() {
-            lines.push("tls-san:".to_string());
-            for san in &k3s.tls_san {
-                lines.push(format!("  - \"{}\"", san));
+        for san in &k3s.tls_san {
+            sans.push(san.clone());
+        }
+    }
+    // Add VPN addresses as SANs (strip /24 mask)
+    if let Some(ref vpn) = config.vpn {
+        for link in &vpn.links {
+            if let Some(ref addr) = link.address {
+                if let Some(ip) = addr.split('/').next() {
+                    sans.push(ip.to_string());
+                }
             }
+        }
+    }
+    if !sans.is_empty() {
+        lines.push("tls-san:".to_string());
+        for san in &sans {
+            lines.push(format!("  - \"{}\"", san));
         }
     }
 
