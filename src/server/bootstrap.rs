@@ -666,28 +666,32 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
     );
 
     // Write role sentinel file for systemd ConditionPathExists-based role selection.
-    // k3s.service has ConditionPathExists=/var/lib/kindling/server-mode (starts if exists).
-    // k3s-agent.service has ConditionPathExists=!/var/lib/kindling/server-mode (starts if absent).
+    // k3s.service has ConditionPathExists=/var/lib/kindling/server-mode.
+    // k3s-agent.service has ConditionPathExists=/var/lib/kindling/agent-mode.
     // Both services are in wantedBy=multi-user.target and ordered After=kindling-init.
     // Systemd evaluates conditions at execution time, after ordering — no race.
-    let sentinel = std::path::Path::new("/var/lib/kindling/server-mode");
+    // If neither sentinel exists (AMI build, no userdata), neither service starts.
+    let sentinel_dir = std::path::Path::new("/var/lib/kindling");
+    let server_sentinel = sentinel_dir.join("server-mode");
+    let agent_sentinel = sentinel_dir.join("agent-mode");
+    let _ = std::fs::create_dir_all(sentinel_dir);
     if config.role == "server" {
-        if let Some(parent) = sentinel.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        std::fs::write(sentinel, "server")
-            .with_context(|| format!("failed to write sentinel {}", sentinel.display()))?;
+        let _ = std::fs::remove_file(&agent_sentinel);
+        std::fs::write(&server_sentinel, "server")
+            .with_context(|| format!("failed to write sentinel {}", server_sentinel.display()))?;
         println!(
-            "{} Server mode: wrote sentinel {}",
+            "{} Server mode: wrote {}",
             "ok".green().bold(),
-            sentinel.display()
+            server_sentinel.display()
         );
     } else {
-        // Agent mode: remove sentinel so k3s-agent.service starts instead of k3s.service
-        let _ = std::fs::remove_file(sentinel);
+        let _ = std::fs::remove_file(&server_sentinel);
+        std::fs::write(&agent_sentinel, "agent")
+            .with_context(|| format!("failed to write sentinel {}", agent_sentinel.display()))?;
         println!(
-            "{} Agent mode: removed sentinel (k3s-agent.service will start)",
-            "ok".green().bold()
+            "{} Agent mode: wrote {} (k3s-agent.service will start)",
+            "ok".green().bold(),
+            agent_sentinel.display()
         );
     }
 
