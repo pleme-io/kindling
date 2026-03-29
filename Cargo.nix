@@ -5380,6 +5380,10 @@ rec {
             packageId = "hostname";
           }
           {
+            name = "libc";
+            packageId = "libc";
+          }
+          {
             name = "prost";
             packageId = "prost";
             optional = true;
