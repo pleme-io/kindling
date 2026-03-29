@@ -123,6 +123,13 @@ pub fn run(config_path: &Path) -> Result<()> {
     let config_str = config_path.to_string_lossy().to_string();
     let mut state = BootstrapState::load_or_default(&config_str);
 
+    // Peek at config to determine test mode (for EC2 tag reporting).
+    // In test mode (skip_nix_rebuild=true), tag the instance after each phase
+    // so the cluster test orchestrator can watch tags instead of SSH polling.
+    let test_mode = ClusterConfig::load(config_path)
+        .map(|c| c.skip_nix_rebuild == Some(true))
+        .unwrap_or(false);
+
     // If previously failed, reset to re-attempt from the failed phase's predecessor
     if state.phase == BootstrapPhase::Failed {
         println!(
@@ -188,6 +195,12 @@ pub fn run(config_path: &Path) -> Result<()> {
             config.distribution
         );
         state.transition(BootstrapPhase::ConfigLoaded)?;
+        if test_mode {
+            tag_instance_phase("config_loaded");
+            tag_instance("NodeRole", &config.role);
+            tag_instance("NodeIndex", &config.node_index.to_string());
+            tag_instance("ClusterName", &config.cluster_name);
+        }
     }
 
     // Phase: Stop K3s before writing PKI secrets
@@ -265,6 +278,9 @@ pub fn run(config_path: &Path) -> Result<()> {
                     );
                 }
                 state.transition(BootstrapPhase::SecretsProvisioned)?;
+                if test_mode {
+                    tag_instance_phase("secrets_provisioned");
+                }
             }
             Err(e) => {
                 state.fail(&e.to_string())?;
@@ -333,6 +349,9 @@ pub fn run(config_path: &Path) -> Result<()> {
             }
         }
         state.transition(BootstrapPhase::WireguardFastStart)?;
+        if test_mode {
+            tag_instance_phase("wireguard_fast_start");
+        }
     }
 
     // Phase: Write node identity
@@ -349,6 +368,9 @@ pub fn run(config_path: &Path) -> Result<()> {
             identity_path.display()
         );
         state.transition(BootstrapPhase::IdentityWritten)?;
+        if test_mode {
+            tag_instance_phase("identity_written");
+        }
     }
 
     // Phase: NixOS rebuild (or skip + manual K3s start for AMI integration tests)
@@ -377,6 +399,9 @@ pub fn run(config_path: &Path) -> Result<()> {
                 "::".blue().bold()
             );
             state.transition(BootstrapPhase::NixRebuildComplete)?;
+            if test_mode {
+                tag_instance_phase("nix_rebuild_skipped");
+            }
         } else {
             println!("{} Running nixos-rebuild switch", ">>".blue().bold());
             state.transition(BootstrapPhase::NixRebuildRunning)?;
@@ -389,6 +414,9 @@ pub fn run(config_path: &Path) -> Result<()> {
                         "ok".green().bold()
                     );
                     state.transition(BootstrapPhase::NixRebuildComplete)?;
+                    if test_mode {
+                        tag_instance_phase("nix_rebuild_complete");
+                    }
                 }
                 Err(e) => {
                     state.fail(&e.to_string())?;
@@ -412,6 +440,9 @@ pub fn run(config_path: &Path) -> Result<()> {
                 Ok(status) => {
                     println!("{} WireGuard ready: {}", "ok".green().bold(), status.message);
                     state.transition(BootstrapPhase::WireguardReady)?;
+                    if test_mode {
+                        tag_instance_phase("wireguard_ready");
+                    }
                 }
                 Err(e) => {
                     if vpn_config.require_liveness {
@@ -424,6 +455,9 @@ pub fn run(config_path: &Path) -> Result<()> {
                             e
                         );
                         state.transition(BootstrapPhase::WireguardReady)?;
+                        if test_mode {
+                            tag_instance_phase("wireguard_ready");
+                        }
                     }
                 }
             }
@@ -433,6 +467,9 @@ pub fn run(config_path: &Path) -> Result<()> {
                 "::".blue().bold()
             );
             state.transition(BootstrapPhase::WireguardReady)?;
+            if test_mode {
+                tag_instance_phase("wireguard_ready");
+            }
         }
     }
 
@@ -445,6 +482,9 @@ pub fn run(config_path: &Path) -> Result<()> {
                 "::".blue().bold()
             );
             state.transition(BootstrapPhase::K3sReady)?;
+            if test_mode {
+                tag_instance_phase("k3s_ready");
+            }
         } else {
             println!("{} Waiting for K3s to become ready", ">>".blue().bold());
             state.transition(BootstrapPhase::K3sWaiting)?;
@@ -453,6 +493,9 @@ pub fn run(config_path: &Path) -> Result<()> {
                 Ok(status) => {
                     println!("{} K3s ready: {}", "ok".green().bold(), status.message);
                     state.transition(BootstrapPhase::K3sReady)?;
+                    if test_mode {
+                        tag_instance_phase("k3s_ready");
+                    }
                 }
                 Err(e) => {
                     state.fail(&e.to_string())?;
@@ -500,6 +543,9 @@ pub fn run(config_path: &Path) -> Result<()> {
     // Phase: Complete
     if state.phase == BootstrapPhase::FluxcdReady {
         state.transition(BootstrapPhase::Complete)?;
+        if test_mode {
+            tag_instance_phase("complete");
+        }
         println!();
         println!(
             "{} Server bootstrap complete for cluster '{}'",
@@ -1077,6 +1123,129 @@ fn provision_bootstrap_secrets(config: &ClusterConfig) -> Result<usize> {
     Ok(provisioned)
 }
 
+// ── EC2 tag-based state reporting (test mode only) ─────────────────────
+
+/// Fetch the EC2 instance ID from IMDS (IMDSv2).
+///
+/// Returns `Err` when not running on EC2 or IMDS is unavailable.
+fn get_instance_id() -> Result<String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .context("failed to build HTTP client for IMDS")?;
+
+    // IMDSv2 token
+    let token = client
+        .put("http://169.254.169.254/latest/api/token")
+        .header("X-aws-ec2-metadata-token-ttl-seconds", "60")
+        .send()
+        .context("IMDS token request failed")?
+        .error_for_status()
+        .context("IMDS token request returned error status")?
+        .text()
+        .context("failed to read IMDS token body")?;
+
+    let token = token.trim().to_string();
+    if token.is_empty() {
+        bail!("IMDS token is empty — not running on EC2?");
+    }
+
+    let id = client
+        .get("http://169.254.169.254/latest/meta-data/instance-id")
+        .header("X-aws-ec2-metadata-token", &token)
+        .send()
+        .context("IMDS instance-id request failed")?
+        .error_for_status()
+        .context("IMDS instance-id request returned error status")?
+        .text()
+        .context("failed to read IMDS instance-id body")?;
+
+    let id = id.trim().to_string();
+    if id.is_empty() {
+        bail!("IMDS instance-id is empty");
+    }
+    Ok(id)
+}
+
+/// Fetch the EC2 instance region from IMDS (IMDSv2).
+///
+/// Returns `Err` when not running on EC2 or IMDS is unavailable.
+fn get_instance_region() -> Result<String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .context("failed to build HTTP client for IMDS")?;
+
+    let token = client
+        .put("http://169.254.169.254/latest/api/token")
+        .header("X-aws-ec2-metadata-token-ttl-seconds", "60")
+        .send()
+        .context("IMDS token request failed")?
+        .error_for_status()
+        .context("IMDS token request returned error status")?
+        .text()
+        .context("failed to read IMDS token body")?;
+
+    let token = token.trim().to_string();
+    if token.is_empty() {
+        bail!("IMDS token is empty — not running on EC2?");
+    }
+
+    let region = client
+        .get("http://169.254.169.254/latest/meta-data/placement/region")
+        .header("X-aws-ec2-metadata-token", &token)
+        .send()
+        .context("IMDS region request failed")?
+        .error_for_status()
+        .context("IMDS region request returned error status")?
+        .text()
+        .context("failed to read IMDS region body")?;
+
+    let region = region.trim().to_string();
+    if region.is_empty() {
+        bail!("IMDS region is empty");
+    }
+    Ok(region)
+}
+
+/// Tag the current EC2 instance with a key-value pair (non-fatal).
+///
+/// Requires the `aws` CLI in PATH and an IAM instance profile with
+/// `ec2:CreateTags` permission. If either is missing, the call fails
+/// silently — this is by design for production instances that may not
+/// have the tag permission.
+fn tag_instance(key: &str, value: &str) {
+    let instance_id = match get_instance_id() {
+        Ok(id) => id,
+        Err(_) => return, // Not on EC2 or IMDS unavailable
+    };
+
+    let region = get_instance_region().unwrap_or_else(|_| "us-east-1".to_string());
+
+    let _ = std::process::Command::new("aws")
+        .args([
+            "ec2",
+            "create-tags",
+            "--region",
+            &region,
+            "--resources",
+            &instance_id,
+            "--tags",
+            &format!("Key={key},Value={value}"),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+/// Tag the current EC2 instance with the bootstrap phase (non-fatal).
+///
+/// Only called when `skip_nix_rebuild=true` (test mode). Allows the cluster
+/// test orchestrator to watch EC2 tags instead of SSH polling.
+fn tag_instance_phase(phase: &str) {
+    tag_instance("BootstrapPhase", phase);
+}
+
 /// Print the current bootstrap status.
 pub fn status() -> Result<()> {
     let state = BootstrapState::load_or_default("");
@@ -1270,5 +1439,32 @@ mod tests {
                 .unwrap();
         let yaml = generate_k3s_config_yaml(&config).unwrap();
         assert!(!yaml.contains("token:"));
+    }
+
+    // ── EC2 tag reporting tests ────────────────────────────────────
+
+    #[test]
+    fn get_instance_id_fails_gracefully_off_ec2() {
+        // Not on EC2 — IMDS is unreachable, should return Err (not panic)
+        let result = get_instance_id();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_instance_region_fails_gracefully_off_ec2() {
+        let result = get_instance_region();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn tag_instance_phase_is_nonfatal_off_ec2() {
+        // Should not panic when IMDS is unavailable
+        tag_instance_phase("test_phase");
+    }
+
+    #[test]
+    fn tag_instance_is_nonfatal_off_ec2() {
+        // Should not panic when IMDS is unavailable
+        tag_instance("TestKey", "test_value");
     }
 }

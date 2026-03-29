@@ -109,6 +109,7 @@ in {
         iproute2
         iptables
         curl
+        awscli2
       ];
     };
 

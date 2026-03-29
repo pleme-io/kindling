@@ -5397,7 +5397,7 @@ rec {
             name = "reqwest";
             packageId = "reqwest";
             usesDefaultFeatures = false;
-            features = [ "json" "rustls-tls" ];
+            features = [ "json" "rustls-tls" "blocking" ];
           }
           {
             name = "semver";
@@ -6539,8 +6539,20 @@ rec {
             packageId = "bytes";
           }
           {
+            name = "futures-channel";
+            packageId = "futures-channel";
+            optional = true;
+            target = { target, features }: (!("wasm32" == target."arch" or null));
+          }
+          {
             name = "futures-core";
             packageId = "futures-core";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "futures-util";
+            packageId = "futures-util";
+            optional = true;
             usesDefaultFeatures = false;
           }
           {
@@ -6706,6 +6718,13 @@ rec {
         ];
         devDependencies = [
           {
+            name = "futures-util";
+            packageId = "futures-util";
+            usesDefaultFeatures = false;
+            target = { target, features }: (!("wasm32" == target."arch" or null));
+            features = [ "std" "alloc" ];
+          }
+          {
             name = "hyper";
             packageId = "hyper";
             usesDefaultFeatures = false;
@@ -6778,7 +6797,7 @@ rec {
           "system-proxy" = [ "hyper-util/client-proxy-system" ];
           "zstd" = [ "tower-http/decompression-zstd" ];
         };
-        resolvedDefaultFeatures = [ "__rustls" "__rustls-ring" "__tls" "json" "rustls-tls" "rustls-tls-webpki-roots" "rustls-tls-webpki-roots-no-provider" ];
+        resolvedDefaultFeatures = [ "__rustls" "__rustls-ring" "__tls" "blocking" "json" "rustls-tls" "rustls-tls-webpki-roots" "rustls-tls-webpki-roots-no-provider" ];
       };
       "ring" = rec {
         crateName = "ring";
