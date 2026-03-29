@@ -577,9 +577,16 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
         std::fs::create_dir_all(dropin_dir)
             .with_context(|| format!("failed to create {}", dropin_dir.display()))?;
 
+        // Find the actual k3s binary path (NixOS uses /nix/store/...-k3s-.../bin/k3s)
+        let k3s_path = std::process::Command::new("which")
+            .arg("k3s")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|_| "/run/current-system/sw/bin/k3s".to_string());
+        let k3s_bin = if k3s_path.is_empty() { "/run/current-system/sw/bin/k3s" } else { &k3s_path };
+
         // ExecStart= (empty) clears the previous ExecStart, then sets the new one.
-        // We read the original ExecStart and replace "server" with "agent".
-        let dropin_content = "[Service]\nExecStart=\nExecStart=/run/current-system/sw/bin/k3s agent --config /etc/rancher/k3s/config.yaml\n";
+        let dropin_content = format!("[Service]\nExecStart=\nExecStart={k3s_bin} agent --config /etc/rancher/k3s/config.yaml\n");
         std::fs::write(&dropin_path, dropin_content)
             .with_context(|| format!("failed to write {}", dropin_path.display()))?;
 
@@ -589,8 +596,9 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
             .status();
 
         println!(
-            "{} K3s agent mode drop-in written (role=agent)",
-            "ok".green().bold()
+            "{} K3s agent mode drop-in written: {} agent --config config.yaml",
+            "ok".green().bold(),
+            k3s_bin
         );
     }
 
