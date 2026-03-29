@@ -521,6 +521,11 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
     // when multiple interfaces exist (e.g., VPN wg-test + eth0).
     if let Ok(node_ip) = get_vpc_private_ip() {
         lines.push(format!("node-ip: \"{}\"", node_ip));
+        // Discover which interface has this IP — Flannel needs explicit iface
+        // when multiple interfaces exist (e.g., ens5 + wg-test VPN).
+        if let Ok(iface) = get_interface_for_ip(&node_ip) {
+            lines.push(format!("flannel-iface: \"{}\"", iface));
+        }
     }
 
     // TLS SANs
@@ -572,6 +577,28 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Find the network interface that has the given IP assigned.
+/// Parses `ip -o addr show` output to match IP → interface name.
+fn get_interface_for_ip(ip: &str) -> Result<String> {
+    let output = std::process::Command::new("ip")
+        .args(["-o", "addr", "show"])
+        .output()
+        .context("failed to run `ip -o addr show`")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        // Format: "2: ens5    inet 172.31.23.43/20 brd ..."
+        if line.contains(&format!("inet {ip}/")) || line.contains(&format!("inet {ip} ")) {
+            // Interface name is the second field
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                return Ok(parts[1].trim_end_matches(':').to_string());
+            }
+        }
+    }
+    bail!("no interface found with IP {ip}")
 }
 
 /// Read the VPC private IP from EC2 instance metadata (IMDSv2).
