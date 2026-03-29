@@ -497,6 +497,14 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
         }
     }
 
+    // Node IP from IMDS — ensures K3s binds to the correct VPC interface.
+    // Without this, K3s may fail with "failed to find interface with specified node ip"
+    // when multiple interfaces exist (e.g., VPN wg-test + eth0).
+    if let Ok(node_ip) = get_vpc_private_ip() {
+        lines.push(format!("node-ip: \"{}\"", node_ip));
+        lines.push("flannel-iface: eth0".to_string());
+    }
+
     // TLS SANs
     if let Some(ref k3s) = config.k3s {
         if !k3s.tls_san.is_empty() {
@@ -546,6 +554,42 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Read the VPC private IP from EC2 instance metadata (IMDSv2).
+fn get_vpc_private_ip() -> Result<String> {
+    // Get IMDSv2 token
+    let token_output = std::process::Command::new("curl")
+        .args([
+            "-sf", "--connect-timeout", "2",
+            "-X", "PUT",
+            "-H", "X-aws-ec2-metadata-token-ttl-seconds: 60",
+            "http://169.254.169.254/latest/api/token",
+        ])
+        .output()
+        .context("failed to get IMDS token")?;
+
+    let token = String::from_utf8_lossy(&token_output.stdout).trim().to_string();
+    if token.is_empty() {
+        bail!("IMDS token is empty — not running on EC2?");
+    }
+
+    // Get private IP
+    let ip_output = std::process::Command::new("curl")
+        .args([
+            "-sf", "--connect-timeout", "2",
+            "-H", &format!("X-aws-ec2-metadata-token: {token}"),
+            "http://169.254.169.254/latest/meta-data/local-ipv4",
+        ])
+        .output()
+        .context("failed to get private IP from IMDS")?;
+
+    let ip = String::from_utf8_lossy(&ip_output.stdout).trim().to_string();
+    if ip.is_empty() {
+        bail!("IMDS private IP is empty");
+    }
+
+    Ok(ip)
 }
 
 /// Known bootstrap secret keys and their target paths + permissions.
