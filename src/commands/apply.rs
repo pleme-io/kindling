@@ -108,20 +108,25 @@ fn run_rebuild(identity: &node_identity::NodeIdentity, gen_dir: &std::path::Path
     }
 
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    // On NixOS, wrap in systemd-run --scope so switch-to-configuration doesn't
-    // SIGTERM the calling service (kindling-init) when activating the new config.
+    // On NixOS, ignore SIGTERM during nixos-rebuild. switch-to-configuration
+    // sends SIGTERM to kindling-init when activating the new systemd config.
+    // We must survive to write K3s config + sentinel files after rebuild.
     let status = if !is_darwin {
-        let mut scope_args = vec!["--scope", "--", cmd];
-        scope_args.extend(arg_refs.iter());
+        // Mask SIGTERM so switch-to-configuration can't kill us
+        unsafe { libc::signal(libc::SIGTERM, libc::SIG_IGN); }
         println!(
-            "{} Running: systemd-run {}",
+            "{} Running: {} {} (SIGTERM masked)",
             ">>".blue().bold(),
-            scope_args.join(" ")
+            cmd,
+            args.join(" ")
         );
-        Command::new("systemd-run")
-            .args(&scope_args)
+        let result = Command::new(cmd)
+            .args(&arg_refs)
             .status()
-            .with_context(|| format!("failed to run systemd-run --scope -- {cmd}"))?
+            .with_context(|| format!("failed to run {cmd}"));
+        // Restore default SIGTERM handling after rebuild
+        unsafe { libc::signal(libc::SIGTERM, libc::SIG_DFL); }
+        result?
     } else {
         println!(
             "{} Running: {} {}",
