@@ -676,52 +676,40 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
         "k3s-agent.service"
     };
 
-    // For agents: wait for the control plane's K3s API to be reachable before
-    // starting k3s-agent.service. Without this, the agent starts immediately
-    // and fails to connect because the CP hasn't finished its own K3s startup.
+    // Agents: K3s has built-in jitter-aware retry for server connectivity.
+    // When k3s-agent starts and the CP isn't ready, K3s retries with 5s base
+    // + 1.0 jitter factor (0-10s between attempts) indefinitely. This is
+    // specifically designed to prevent thundering herd when multiple agents
+    // start simultaneously (K3s PR #8863).
+    //
+    // We do NOT block kindling-init with a TCP poll — that was redundant
+    // and could block for up to 300s. Instead, we let K3s handle it:
+    // - systemd Restart=always + RestartSec=5s provides crash recovery
+    // - K3s config.Get() retries with jitter until the server responds
+    // - kindling-init completes immediately, tagging the instance as 'complete'
     if config.role == "agent" {
         if let Some(ref join) = config.join_server {
-            // Extract host:port from the join URL (e.g., "https://10.99.0.1:6443")
             let api_addr = join
                 .strip_prefix("https://")
                 .or_else(|| join.strip_prefix("http://"))
                 .unwrap_or(join);
-            println!(
-                "{} Waiting for control plane API at {}...",
-                "..".yellow().bold(),
-                api_addr
-            );
-            let start = std::time::Instant::now();
-            let timeout = std::time::Duration::from_secs(300);
-            loop {
-                if start.elapsed() > timeout {
-                    eprintln!(
-                        "{} Timed out waiting for CP API at {} after {:?}",
-                        "!!".red().bold(),
-                        api_addr,
-                        timeout
-                    );
-                    break;
-                }
-                match std::net::TcpStream::connect_timeout(
-                    &api_addr.parse().unwrap_or_else(|_| {
-                        std::net::SocketAddr::from(([127, 0, 0, 1], 6443))
-                    }),
-                    std::time::Duration::from_secs(5),
-                ) {
-                    Ok(_) => {
-                        println!(
-                            "{} Control plane API reachable at {} ({:.1}s)",
-                            "ok".green().bold(),
-                            api_addr,
-                            start.elapsed().as_secs_f64()
-                        );
-                        break;
-                    }
-                    Err(_) => {
-                        std::thread::sleep(std::time::Duration::from_secs(5));
-                    }
-                }
+            // Quick non-blocking connectivity check (informational only)
+            match std::net::TcpStream::connect_timeout(
+                &api_addr
+                    .parse()
+                    .unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], 6443))),
+                std::time::Duration::from_secs(2),
+            ) {
+                Ok(_) => println!(
+                    "{} CP API reachable at {}",
+                    "ok".green().bold(),
+                    api_addr
+                ),
+                Err(_) => println!(
+                    "{} CP API not yet reachable at {} -- K3s agent will retry with jitter",
+                    "..".blue().bold(),
+                    api_addr
+                ),
             }
         }
     }
