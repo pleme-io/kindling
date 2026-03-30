@@ -72,6 +72,11 @@ pub struct ClusterConfig {
     /// has the full NixOS config from the build phase.
     #[serde(default)]
     pub skip_nix_rebuild: Option<bool>,
+
+    /// Force nixos-rebuild during bootstrap (bare-metal or non-AMI nodes).
+    /// Default: false (max-baked AMI path — no rebuild needed).
+    #[serde(default)]
+    pub force_rebuild: Option<bool>,
 }
 
 /// FluxCD bootstrap configuration from cloud-init.
@@ -203,6 +208,20 @@ fn default_role() -> String {
 use crate::vpn::validate as vpn_validate;
 
 impl ClusterConfig {
+    /// Whether nixos-rebuild should run during bootstrap.
+    /// Returns true only if force_rebuild is explicitly true, or if
+    /// skip_nix_rebuild is explicitly false (backward compat).
+    /// Default (both None) = no rebuild (max-baked AMI path).
+    pub fn should_rebuild(&self) -> bool {
+        if self.force_rebuild == Some(true) {
+            return true;
+        }
+        if self.skip_nix_rebuild == Some(false) {
+            return true;
+        }
+        false
+    }
+
     /// Load from a JSON file on disk.
     pub fn load(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)

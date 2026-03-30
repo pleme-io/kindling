@@ -46,6 +46,12 @@ in {
       '';
     };
 
+    timeoutStartSec = mkOption {
+      type = types.int;
+      default = 120;
+      description = "Timeout for kindling-init.service (seconds). Default 120 for max-baked AMI. Set to 1800 for force_rebuild.";
+    };
+
     daemon = {
       enable = mkOption {
         type = types.bool;
@@ -83,7 +89,7 @@ in {
     systemd.services.kindling-init = mkIf (!cfg.legacyBootstrap) {
       description = "Kindling init — read cloud metadata + bootstrap K3s cluster";
       after = ["fetch-ec2-metadata.service" "network-online.target"];
-      before = ["k3s.service" "k3s-agent.service"];
+      before = ["k3s.service" "k3s-agent.service" "fluxcd-bootstrap.service"];
       wants = ["network-online.target" "fetch-ec2-metadata.service"];
       wantedBy = ["multi-user.target"];
 
@@ -96,20 +102,17 @@ in {
         ExecStart = "${cfg.package}/bin/kindling init --userdata /etc/ec2-metadata/user-data --config-out ${cfg.configPath}";
         StandardOutput = "journal";
         StandardError = "journal";
-        # Allow time for nixos-rebuild + K3s + FluxCD
-        TimeoutStartSec = "1800";
+        TimeoutStartSec = toString cfg.timeoutStartSec;
       };
 
       path = with pkgs; [
-        nix
-        git
-        kubectl
-        nixos-rebuild
         wireguard-tools
         iproute2
         iptables
         curl
         awscli2
+        kubectl
+        systemd
       ];
     };
 
