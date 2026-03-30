@@ -1,11 +1,11 @@
-//! Bootstrap state machine for server mode.
+//! Bootstrap state machine for server mode (max-baked AMI).
 //!
-//! Orchestrates the full sequence: parse config → write identity → nixos-rebuild
-//! → wait for K3s → wait for FluxCD → report readiness.
+//! Default path: read config → write secrets → set hostname → write K3s config
+//! + sentinel → start WireGuard → write FluxCD sentinel → exit. K3s and FluxCD
+//! start after init exits via systemd ordering.
 //!
-//! State is persisted to `/var/lib/kindling/server-state.json` after each phase
-//! transition, so re-running `kindling server bootstrap` resumes from the last
-//! good phase.
+//! Force-rebuild path (bare-metal): same as above but runs nixos-rebuild after
+//! secrets, before K3s config. Gated by `force_rebuild: true` in cluster config.
 
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
@@ -29,16 +29,15 @@ pub enum BootstrapPhase {
     Pending,
     ConfigLoaded,
     SecretsProvisioned,
-    WireguardFastStart,
-    IdentityWritten,
-    NixRebuildRunning,
-    NixRebuildComplete,
-    WireguardWaiting,
+    #[serde(alias = "wireguard_fast_start")]
+    HostnameSet,
+    #[serde(alias = "identity_written", alias = "nix_rebuild_running", alias = "nix_rebuild_complete")]
+    K3sConfigWritten,
+    #[serde(alias = "wireguard_waiting")]
+    WireguardStarted,
     WireguardReady,
-    K3sWaiting,
-    K3sReady,
-    FluxcdBootstrapping,
-    FluxcdReady,
+    #[serde(alias = "k3s_waiting", alias = "k3s_ready", alias = "fluxcd_bootstrapping", alias = "fluxcd_ready")]
+    FluxcdConfigWritten,
     Complete,
     Failed,
 }
@@ -205,8 +204,8 @@ pub fn run(config_path: &Path) -> Result<()> {
 
     // Phase: Stop K3s before writing PKI secrets
     // K3s auto-starts from the AMI config and generates its own CA.
-    // We must stop it, clear stale TLS state, then let nixos-rebuild
-    // start it fresh with our seeded PKI.
+    // We must stop it, clear stale TLS state, then let it start fresh
+    // with our seeded PKI.
     if state.phase == BootstrapPhase::ConfigLoaded {
         // K3s may have auto-started from the AMI config and generated its own
         // CA certs + datastore. We must halt it and clear ALL state so it starts
@@ -289,11 +288,117 @@ pub fn run(config_path: &Path) -> Result<()> {
         }
     }
 
-    // Phase: WireGuard fast-start (before nixos-rebuild for <12s VPN connectivity)
+    // Phase: Set hostname from cluster config
     if state.phase == BootstrapPhase::SecretsProvisioned {
         let config = ClusterConfig::load(config_path)?;
+        let hostname = format!("{}-{}-{}", config.cluster_name, config.role, config.node_index);
+        println!("{} Setting hostname: {}", ">>".blue().bold(), hostname);
+        let _ = std::process::Command::new("hostnamectl")
+            .args(["set-hostname", &hostname])
+            .status();
+        println!("{} Hostname set to {}", "ok".green().bold(), hostname);
+        state.transition(BootstrapPhase::HostnameSet)?;
+        if test_mode {
+            tag_instance_phase("hostname_set");
+        }
+    }
+
+    // Phase: Write K3s config (with optional nixos-rebuild for bare-metal)
+    if state.phase == BootstrapPhase::HostnameSet {
+        let config = ClusterConfig::load(config_path)?;
+
+        if config.should_rebuild() {
+            // Legacy rebuild path for bare-metal
+            println!("{} Force rebuild requested -- running nixos-rebuild", ">>".blue().bold());
+
+            // Write node identity (needed by nixos-rebuild)
+            println!("{} Generating node identity", ">>".blue().bold());
+            let identity = config.to_node_identity();
+            let identity_path = NodeIdentity::server_path();
+            identity.save(&identity_path)?;
+            println!(
+                "{} Identity written to {}",
+                "ok".green().bold(),
+                identity_path.display()
+            );
+
+            const MAX_REBUILD_ATTEMPTS: u32 = 3;
+            const REBUILD_RETRY_DELAY: Duration = Duration::from_secs(30);
+            let mut last_error = String::new();
+            let mut succeeded = false;
+
+            for attempt in 1..=MAX_REBUILD_ATTEMPTS {
+                if attempt > 1 {
+                    println!(
+                        "{} Retrying nixos-rebuild (attempt {}/{}), waiting {}s",
+                        ">>".blue().bold(),
+                        attempt,
+                        MAX_REBUILD_ATTEMPTS,
+                        REBUILD_RETRY_DELAY.as_secs(),
+                    );
+                    std::thread::sleep(REBUILD_RETRY_DELAY);
+                }
+
+                match apply::run_rebuild_from_path_with_context(
+                    &identity_path,
+                    Some(&format!("nix_rebuild_running (attempt {}/{})", attempt, MAX_REBUILD_ATTEMPTS)),
+                ) {
+                    Ok(()) => {
+                        println!(
+                            "{} NixOS rebuild completed successfully",
+                            "ok".green().bold()
+                        );
+                        succeeded = true;
+                        break;
+                    }
+                    Err(e) => {
+                        last_error = e.to_string();
+                        println!(
+                            "{} nixos-rebuild attempt {}/{} failed: {}",
+                            "!!".yellow().bold(),
+                            attempt,
+                            MAX_REBUILD_ATTEMPTS,
+                            last_error,
+                        );
+                    }
+                }
+            }
+
+            if !succeeded {
+                state.fail(&last_error)?;
+                bail!(
+                    "nixos-rebuild failed after {} attempts: {}",
+                    MAX_REBUILD_ATTEMPTS,
+                    last_error,
+                );
+            }
+
+            // After rebuild succeeds, also write K3s runtime config
+            write_k3s_runtime_config(&config)?;
+        } else {
+            // Max-baked AMI path (default) — just write K3s config
+            println!("{} Writing K3s runtime config (max-baked AMI, no rebuild)", ">>".blue().bold());
+            write_k3s_runtime_config(&config)?;
+
+            // K3s will auto-start after kindling-init completes because the
+            // NixOS module sets Before=k3s.service on kindling-init.service.
+            println!(
+                "{} K3s will auto-start after init completes (Before=k3s.service)",
+                "::".blue().bold()
+            );
+        }
+
+        state.transition(BootstrapPhase::K3sConfigWritten)?;
+        if test_mode {
+            tag_instance_phase("k3s_config_written");
+        }
+    }
+
+    // Phase: WireGuard fast-start
+    if state.phase == BootstrapPhase::K3sConfigWritten {
+        let config = ClusterConfig::load(config_path)?;
         println!(
-            "{} Fast-starting WireGuard (before nixos-rebuild)",
+            "{} Fast-starting WireGuard",
             ">>".blue().bold()
         );
 
@@ -342,146 +447,30 @@ pub fn run(config_path: &Path) -> Result<()> {
             }
             Err(e) => {
                 println!(
-                    "{} WireGuard fast-start failed (will retry after rebuild): {}",
+                    "{} WireGuard fast-start failed (non-fatal): {}",
                     "!!".yellow().bold(),
                     e
                 );
             }
         }
-        state.transition(BootstrapPhase::WireguardFastStart)?;
+        state.transition(BootstrapPhase::WireguardStarted)?;
         if test_mode {
-            tag_instance_phase("wireguard_fast_start");
-        }
-    }
-
-    // Phase: Write node identity
-    if state.phase == BootstrapPhase::WireguardFastStart {
-        println!("{} Generating node identity", ">>".blue().bold());
-        let config = ClusterConfig::load(config_path)?;
-        let identity = config.to_node_identity();
-        let identity_path = NodeIdentity::server_path();
-
-        identity.save(&identity_path)?;
-        println!(
-            "{} Identity written to {}",
-            "ok".green().bold(),
-            identity_path.display()
-        );
-        state.transition(BootstrapPhase::IdentityWritten)?;
-        if test_mode {
-            tag_instance_phase("identity_written");
-        }
-    }
-
-    // Phase: NixOS rebuild (or skip + manual K3s start for AMI integration tests)
-    if state.phase == BootstrapPhase::IdentityWritten {
-        let config = ClusterConfig::load(config_path)?;
-        if config.skip_nix_rebuild == Some(true) {
-            println!(
-                "{} Skipping nixos-rebuild (skip_nix_rebuild=true)",
-                "::".blue().bold()
-            );
-            state.transition(BootstrapPhase::NixRebuildRunning)?;
-
-            // Write K3s runtime config so K3s starts with the right flags.
-            // Without nixos-rebuild, the NixOS systemd unit has the AMI's
-            // default flags. This config.yaml overrides them at runtime.
-            println!(
-                "{} Writing K3s runtime config",
-                ">>".blue().bold()
-            );
-            write_k3s_runtime_config(&config)?;
-
-            // K3s will auto-start after kindling-init completes because the
-            // NixOS module sets Before=k3s.service on kindling-init.service.
-            println!(
-                "{} K3s will auto-start after init completes (Before=k3s.service)",
-                "::".blue().bold()
-            );
-            state.transition(BootstrapPhase::NixRebuildComplete)?;
-            if test_mode {
-                tag_instance_phase("nix_rebuild_skipped");
-            }
-        } else {
-            println!("{} Running nixos-rebuild switch", ">>".blue().bold());
-            state.transition(BootstrapPhase::NixRebuildRunning)?;
-
-            let identity_path = NodeIdentity::server_path();
-            const MAX_REBUILD_ATTEMPTS: u32 = 3;
-            const REBUILD_RETRY_DELAY: Duration = Duration::from_secs(30);
-            let mut last_error = String::new();
-            let mut succeeded = false;
-
-            for attempt in 1..=MAX_REBUILD_ATTEMPTS {
-                if attempt > 1 {
-                    println!(
-                        "{} Retrying nixos-rebuild (attempt {}/{}), waiting {}s",
-                        ">>".blue().bold(),
-                        attempt,
-                        MAX_REBUILD_ATTEMPTS,
-                        REBUILD_RETRY_DELAY.as_secs(),
-                    );
-                    std::thread::sleep(REBUILD_RETRY_DELAY);
-                }
-
-                match apply::run_rebuild_from_path_with_context(
-                    &identity_path,
-                    Some(&format!("nix_rebuild_running (attempt {}/{})", attempt, MAX_REBUILD_ATTEMPTS)),
-                ) {
-                    Ok(()) => {
-                        println!(
-                            "{} NixOS rebuild completed successfully",
-                            "ok".green().bold()
-                        );
-                        succeeded = true;
-                        break;
-                    }
-                    Err(e) => {
-                        last_error = e.to_string();
-                        println!(
-                            "{} nixos-rebuild attempt {}/{} failed: {}",
-                            "!!".yellow().bold(),
-                            attempt,
-                            MAX_REBUILD_ATTEMPTS,
-                            last_error,
-                        );
-                    }
-                }
-            }
-
-            if succeeded {
-                state.transition(BootstrapPhase::NixRebuildComplete)?;
-                if test_mode {
-                    tag_instance_phase("nix_rebuild_complete");
-                }
-            } else {
-                state.fail(&last_error)?;
-                bail!(
-                    "nixos-rebuild failed after {} attempts: {}",
-                    MAX_REBUILD_ATTEMPTS,
-                    last_error,
-                );
-            }
+            tag_instance_phase("wireguard_started");
         }
     }
 
     // Phase: Wait for WireGuard (only if VPN configured)
-    if state.phase == BootstrapPhase::NixRebuildComplete {
+    if state.phase == BootstrapPhase::WireguardStarted {
         let config = ClusterConfig::load(config_path)?;
         if let Some(ref vpn_config) = config.vpn {
             println!(
                 "{} Waiting for WireGuard tunnels to establish",
                 ">>".blue().bold()
             );
-            state.transition(BootstrapPhase::WireguardWaiting)?;
 
             match health::wait_for_wireguard(Duration::from_secs(60), Duration::from_secs(5)) {
                 Ok(status) => {
                     println!("{} WireGuard ready: {}", "ok".green().bold(), status.message);
-                    state.transition(BootstrapPhase::WireguardReady)?;
-                    if test_mode {
-                        tag_instance_phase("wireguard_ready");
-                    }
                 }
                 Err(e) => {
                     if vpn_config.require_liveness {
@@ -493,10 +482,6 @@ pub fn run(config_path: &Path) -> Result<()> {
                             "!!".yellow().bold(),
                             e
                         );
-                        state.transition(BootstrapPhase::WireguardReady)?;
-                        if test_mode {
-                            tag_instance_phase("wireguard_ready");
-                        }
                     }
                 }
             }
@@ -505,82 +490,37 @@ pub fn run(config_path: &Path) -> Result<()> {
                 "{} No VPN configured, skipping WireGuard check",
                 "::".blue().bold()
             );
-            state.transition(BootstrapPhase::WireguardReady)?;
-            if test_mode {
-                tag_instance_phase("wireguard_ready");
-            }
+        }
+        state.transition(BootstrapPhase::WireguardReady)?;
+        if test_mode {
+            tag_instance_phase("wireguard_ready");
         }
     }
 
-    // Phase: Wait for K3s (skip when skip_nix_rebuild — K3s starts AFTER init exits)
+    // Phase: Write FluxCD sentinel (FluxCD starts after K3s via systemd ordering)
     if state.phase == BootstrapPhase::WireguardReady {
         let config = ClusterConfig::load(config_path)?;
-        if config.skip_nix_rebuild == Some(true) {
-            println!(
-                "{} Skipping K3s health check (K3s starts after init exits via Before=k3s.service)",
-                "::".blue().bold()
-            );
-            state.transition(BootstrapPhase::K3sReady)?;
-            if test_mode {
-                tag_instance_phase("k3s_ready");
-            }
-        } else {
-            println!("{} Waiting for K3s to become ready", ">>".blue().bold());
-            state.transition(BootstrapPhase::K3sWaiting)?;
 
-            match health::wait_for_k3s(Duration::from_secs(300), Duration::from_secs(10)) {
-                Ok(status) => {
-                    println!("{} K3s ready: {}", "ok".green().bold(), status.message);
-                    state.transition(BootstrapPhase::K3sReady)?;
-                    if test_mode {
-                        tag_instance_phase("k3s_ready");
-                    }
-                }
-                Err(e) => {
-                    state.fail(&e.to_string())?;
-                    bail!("K3s health check failed: {}", e);
-                }
+        if config.fluxcd.is_some() && config.role == "server" {
+            let sentinel = std::path::Path::new("/var/lib/kindling/fluxcd-ready");
+            if let Some(parent) = sentinel.parent() {
+                let _ = std::fs::create_dir_all(parent);
             }
+            std::fs::write(sentinel, "fluxcd")
+                .with_context(|| format!("failed to write FluxCD sentinel {}", sentinel.display()))?;
+            println!("{} FluxCD sentinel: {} (service will start after K3s)", "ok".green().bold(), sentinel.display());
+        } else {
+            println!("{} FluxCD not configured, skipping sentinel", "::".blue().bold());
         }
-    }
 
-    // Phase: Wait for FluxCD (only if enabled; skip when skip_nix_rebuild)
-    if state.phase == BootstrapPhase::K3sReady {
-        let config = ClusterConfig::load(config_path)?;
-        if config.skip_nix_rebuild == Some(true) {
-            println!(
-                "{} Skipping FluxCD check (skip_nix_rebuild mode)",
-                "::".blue().bold()
-            );
-            state.transition(BootstrapPhase::FluxcdReady)?;
-        } else if config.fluxcd.is_some() {
-            println!(
-                "{} Waiting for FluxCD reconciliation",
-                ">>".blue().bold()
-            );
-            state.transition(BootstrapPhase::FluxcdBootstrapping)?;
-
-            match health::wait_for_fluxcd(Duration::from_secs(600), Duration::from_secs(15)) {
-                Ok(status) => {
-                    println!("{} FluxCD ready: {}", "ok".green().bold(), status.message);
-                    state.transition(BootstrapPhase::FluxcdReady)?;
-                }
-                Err(e) => {
-                    state.fail(&e.to_string())?;
-                    bail!("FluxCD health check failed: {}", e);
-                }
-            }
-        } else {
-            println!(
-                "{} FluxCD not configured, skipping",
-                "::".blue().bold()
-            );
-            state.transition(BootstrapPhase::FluxcdReady)?;
+        state.transition(BootstrapPhase::FluxcdConfigWritten)?;
+        if test_mode {
+            tag_instance_phase("fluxcd_config_written");
         }
     }
 
     // Phase: Complete
-    if state.phase == BootstrapPhase::FluxcdReady {
+    if state.phase == BootstrapPhase::FluxcdConfigWritten {
         state.transition(BootstrapPhase::Complete)?;
         if test_mode {
             tag_instance_phase("complete");
@@ -1313,19 +1253,42 @@ mod tests {
             "secrets_provisioned"
         );
         assert_eq!(
-            BootstrapPhase::WireguardFastStart.to_string(),
-            "wireguard_fast_start"
+            BootstrapPhase::HostnameSet.to_string(),
+            "hostname_set"
         );
-        assert_eq!(BootstrapPhase::WireguardWaiting.to_string(), "wireguard_waiting");
+        assert_eq!(BootstrapPhase::K3sConfigWritten.to_string(), "k3s_config_written");
+        assert_eq!(BootstrapPhase::WireguardStarted.to_string(), "wireguard_started");
         assert_eq!(BootstrapPhase::WireguardReady.to_string(), "wireguard_ready");
+        assert_eq!(BootstrapPhase::FluxcdConfigWritten.to_string(), "fluxcd_config_written");
         assert_eq!(BootstrapPhase::Complete.to_string(), "complete");
         assert_eq!(BootstrapPhase::Failed.to_string(), "failed");
     }
 
     #[test]
+    fn bootstrap_phase_backward_compat_aliases() {
+        // Old phase names should deserialize to the new equivalent phases
+        let old_phases = [
+            ("\"wireguard_fast_start\"", BootstrapPhase::HostnameSet),
+            ("\"identity_written\"", BootstrapPhase::K3sConfigWritten),
+            ("\"nix_rebuild_running\"", BootstrapPhase::K3sConfigWritten),
+            ("\"nix_rebuild_complete\"", BootstrapPhase::K3sConfigWritten),
+            ("\"wireguard_waiting\"", BootstrapPhase::WireguardStarted),
+            ("\"k3s_waiting\"", BootstrapPhase::FluxcdConfigWritten),
+            ("\"k3s_ready\"", BootstrapPhase::FluxcdConfigWritten),
+            ("\"fluxcd_bootstrapping\"", BootstrapPhase::FluxcdConfigWritten),
+            ("\"fluxcd_ready\"", BootstrapPhase::FluxcdConfigWritten),
+        ];
+        for (json, expected) in &old_phases {
+            let parsed: BootstrapPhase = serde_json::from_str(json)
+                .unwrap_or_else(|e| panic!("failed to parse {json}: {e}"));
+            assert_eq!(parsed, *expected, "alias {json} should map to {expected:?}");
+        }
+    }
+
+    #[test]
     fn bootstrap_state_serialization() {
         let state = BootstrapState {
-            phase: BootstrapPhase::K3sReady,
+            phase: BootstrapPhase::K3sConfigWritten,
             config_path: "/etc/pangea/cluster-config.json".to_string(),
             cluster_name: "test-cluster".to_string(),
             error: None,
@@ -1335,7 +1298,7 @@ mod tests {
         let json = serde_json::to_string(&state).unwrap();
         let deserialized: BootstrapState = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(deserialized.phase, BootstrapPhase::K3sReady);
+        assert_eq!(deserialized.phase, BootstrapPhase::K3sConfigWritten);
         assert_eq!(deserialized.cluster_name, "test-cluster");
     }
 
