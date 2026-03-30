@@ -654,7 +654,7 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
     let server_sentinel = sentinel_dir.join("server-mode");
     let agent_sentinel = sentinel_dir.join("agent-mode");
     let _ = std::fs::create_dir_all(sentinel_dir);
-    if config.role == "server" {
+    let k3s_service = if config.role == "server" {
         let _ = std::fs::remove_file(&agent_sentinel);
         std::fs::write(&server_sentinel, "server")
             .with_context(|| format!("failed to write sentinel {}", server_sentinel.display()))?;
@@ -663,6 +663,7 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
             "ok".green().bold(),
             server_sentinel.display()
         );
+        "k3s.service"
     } else {
         let _ = std::fs::remove_file(&server_sentinel);
         std::fs::write(&agent_sentinel, "agent")
@@ -672,7 +673,20 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
             "ok".green().bold(),
             agent_sentinel.display()
         );
-    }
+        "k3s-agent.service"
+    };
+
+    // Explicitly start the K3s service. ConditionPathExists is a safety net
+    // but systemd may have already evaluated (and failed) the condition before
+    // the sentinel was written. Explicit start ensures K3s always runs.
+    let _ = std::process::Command::new("systemctl")
+        .args(["start", "--no-block", k3s_service])
+        .status();
+    println!(
+        "{} Queued {} for start",
+        "ok".green().bold(),
+        k3s_service
+    );
 
     Ok(())
 }
