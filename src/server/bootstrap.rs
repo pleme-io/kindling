@@ -550,8 +550,13 @@ pub fn run(config_path: &Path) -> Result<()> {
 /// - `cluster-init: true` for the first server
 /// - `server: https://...` for joining an existing cluster
 /// - `token` for cluster authentication
-/// - `disable-network-policy: true` to avoid WireGuard/Flannel conflicts
-/// - `tls-san` for certificate SANs (explicit + VPN addresses)
+/// - Server-only (role == "server"):
+///   - `disable-network-policy: true` to avoid WireGuard/Flannel conflicts
+///   - `tls-san` for certificate SANs (explicit + VPN addresses)
+///
+/// Server-only keys are gated by `config.role == "server"` because K3s agent
+/// (`k3s agent`) fatal-errors on unrecognized config keys like `disable-network-policy`
+/// and `tls-san`. Both roles share `server`/`cluster-init` and `token`.
 ///
 /// Does NOT include `node-ip` or `flannel-iface` — those require IMDS/network
 /// discovery and are appended by the caller (`write_k3s_runtime_config`).
@@ -574,33 +579,38 @@ fn generate_k3s_config_yaml(config: &ClusterConfig) -> Result<String> {
         }
     }
 
-    // Disable network policy controller — it crashes intermittently when
-    // WireGuard interfaces are present alongside Flannel. The controller
-    // re-evaluates interfaces on restart and fails to find the node IP.
-    // Network policies can be provided by Cilium/Calico if needed.
-    lines.push("disable-network-policy: true".to_string());
+    // Server-only config keys: these are only valid for `k3s server`, not
+    // `k3s agent`. K3s agent will fatal-error on unknown flags in config.yaml
+    // (e.g., "disable-network-policy", "tls-san", "cluster-init").
+    if config.role == "server" {
+        // Disable network policy controller — it crashes intermittently when
+        // WireGuard interfaces are present alongside Flannel. The controller
+        // re-evaluates interfaces on restart and fails to find the node IP.
+        // Network policies can be provided by Cilium/Calico if needed.
+        lines.push("disable-network-policy: true".to_string());
 
-    // TLS SANs — include VPN addresses so K3s cert is valid for VPN connections
-    let mut sans: Vec<String> = Vec::new();
-    if let Some(ref k3s) = config.k3s {
-        for san in &k3s.tls_san {
-            sans.push(san.clone());
+        // TLS SANs — include VPN addresses so K3s cert is valid for VPN connections
+        let mut sans: Vec<String> = Vec::new();
+        if let Some(ref k3s) = config.k3s {
+            for san in &k3s.tls_san {
+                sans.push(san.clone());
+            }
         }
-    }
-    // Add VPN addresses as SANs (strip /24 mask)
-    if let Some(ref vpn) = config.vpn {
-        for link in &vpn.links {
-            if let Some(ref addr) = link.address {
-                if let Some(ip) = addr.split('/').next() {
-                    sans.push(ip.to_string());
+        // Add VPN addresses as SANs (strip /24 mask)
+        if let Some(ref vpn) = config.vpn {
+            for link in &vpn.links {
+                if let Some(ref addr) = link.address {
+                    if let Some(ip) = addr.split('/').next() {
+                        sans.push(ip.to_string());
+                    }
                 }
             }
         }
-    }
-    if !sans.is_empty() {
-        lines.push("tls-san:".to_string());
-        for san in &sans {
-            lines.push(format!("  - \"{}\"", san));
+        if !sans.is_empty() {
+            lines.push("tls-san:".to_string());
+            for san in &sans {
+                lines.push(format!("  - \"{}\"", san));
+            }
         }
     }
 
@@ -1470,6 +1480,38 @@ mod tests {
                 .unwrap();
         let yaml = generate_k3s_config_yaml(&config).unwrap();
         assert!(!yaml.contains("token:"));
+    }
+
+    #[test]
+    fn k3s_config_agent_omits_server_only_keys() {
+        // Agent config must NOT include server-only keys that crash `k3s agent`:
+        // disable-network-policy, tls-san, cluster-init
+        let config = ClusterConfig::from_json(
+            r#"{"cluster_name":"test","role":"agent","join_server":"https://1.2.3.4:6443","skip_nix_rebuild":true,"bootstrap_secrets":{"k3s_server_token":"tok"},"vpn":{"require_liveness":false,"links":[{"name":"wg-test","address":"10.99.0.2/24","private_key_file":"/tmp/key","peers":[],"firewall":{"trust_interface":false,"allowed_tcp_ports":[],"allowed_udp_ports":[]}}]}}"#,
+        )
+        .unwrap();
+        let yaml = generate_k3s_config_yaml(&config).unwrap();
+        // Agent should have server URL and token
+        assert!(yaml.contains("server: \"https://1.2.3.4:6443\""));
+        assert!(yaml.contains("token: \"tok\""));
+        // Agent must NOT have server-only flags
+        assert!(!yaml.contains("disable-network-policy"), "agent config must not contain disable-network-policy");
+        assert!(!yaml.contains("tls-san"), "agent config must not contain tls-san");
+        assert!(!yaml.contains("cluster-init"), "agent config must not contain cluster-init");
+    }
+
+    #[test]
+    fn k3s_config_server_includes_server_only_keys() {
+        // Server config SHOULD include server-only keys
+        let config = ClusterConfig::from_json(
+            r#"{"cluster_name":"test","role":"server","cluster_init":true,"skip_nix_rebuild":true,"bootstrap_secrets":{"k3s_server_token":"tok"},"vpn":{"require_liveness":false,"links":[{"name":"wg-test","address":"10.99.0.1/24","private_key_file":"/tmp/key","peers":[],"firewall":{"trust_interface":false,"allowed_tcp_ports":[],"allowed_udp_ports":[]}}]}}"#,
+        )
+        .unwrap();
+        let yaml = generate_k3s_config_yaml(&config).unwrap();
+        assert!(yaml.contains("cluster-init: true"));
+        assert!(yaml.contains("disable-network-policy: true"));
+        assert!(yaml.contains("tls-san:"));
+        assert!(yaml.contains("10.99.0.1"));
     }
 
     // ── EC2 tag reporting tests ────────────────────────────────────
