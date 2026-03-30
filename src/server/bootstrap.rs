@@ -676,6 +676,56 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
         "k3s-agent.service"
     };
 
+    // For agents: wait for the control plane's K3s API to be reachable before
+    // starting k3s-agent.service. Without this, the agent starts immediately
+    // and fails to connect because the CP hasn't finished its own K3s startup.
+    if config.role == "agent" {
+        if let Some(ref join) = config.join_server {
+            // Extract host:port from the join URL (e.g., "https://10.99.0.1:6443")
+            let api_addr = join
+                .strip_prefix("https://")
+                .or_else(|| join.strip_prefix("http://"))
+                .unwrap_or(join);
+            println!(
+                "{} Waiting for control plane API at {}...",
+                "..".yellow().bold(),
+                api_addr
+            );
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_secs(300);
+            loop {
+                if start.elapsed() > timeout {
+                    eprintln!(
+                        "{} Timed out waiting for CP API at {} after {:?}",
+                        "!!".red().bold(),
+                        api_addr,
+                        timeout
+                    );
+                    break;
+                }
+                match std::net::TcpStream::connect_timeout(
+                    &api_addr.parse().unwrap_or_else(|_| {
+                        std::net::SocketAddr::from(([127, 0, 0, 1], 6443))
+                    }),
+                    std::time::Duration::from_secs(5),
+                ) {
+                    Ok(_) => {
+                        println!(
+                            "{} Control plane API reachable at {} ({:.1}s)",
+                            "ok".green().bold(),
+                            api_addr,
+                            start.elapsed().as_secs_f64()
+                        );
+                        break;
+                    }
+                    Err(_) => {
+                        std::thread::sleep(std::time::Duration::from_secs(5));
+                    }
+                }
+            }
+        }
+    }
+
     // Explicitly start the K3s service. ConditionPathExists is a safety net
     // but systemd may have already evaluated (and failed) the condition before
     // the sentinel was written. Explicit start ensures K3s always runs.
