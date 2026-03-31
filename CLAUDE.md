@@ -86,6 +86,86 @@ the `write_k3s_runtime_config` step within the K3s config generation phase.
 
 ---
 
+## Node Name Generation (`derive_hostname`)
+
+K3s rejects duplicate hostnames in a cluster. AMI-built nodes all share the same
+base hostname (e.g., "ami-builder"), so kindling-init generates a unique K3s
+`node-name` from the cluster config:
+
+```
+{cluster_name}-{role}-{node_index}
+```
+
+Examples:
+- `prod-us-east-server-0` (server, index 0)
+- `prod-us-east-agent-1` (agent, index 1)
+- `cluster-test-server-0` (test cluster CP)
+
+Implementation: `ClusterConfig::derive_hostname()` in `server/cluster_config.rs`.
+Called during `generate_k3s_config_yaml()` to write the `node-name:` line in
+`/etc/rancher/k3s/config.yaml`.
+
+---
+
+## Server-Only Config Gating
+
+K3s agent will fatal-error on config keys that are only valid for `k3s server`
+(e.g., `disable-network-policy`, `tls-san`, `cluster-init`). The config generator
+gates these behind a role check:
+
+```rust
+if config.role == "server" {
+    // disable-network-policy, tls-san, cluster-init
+}
+```
+
+**Server-only keys** (only written when `role == "server"`):
+- `disable-network-policy: true` -- prevents crashes when WireGuard interfaces
+  coexist with Flannel
+- `tls-san:` -- VPN addresses added as SANs so K3s cert is valid over VPN
+- `cluster-init: true` -- first server initializes the cluster
+
+**Common keys** (written for both server and agent):
+- `node-name:` -- unique name from `derive_hostname()`
+- `token:` -- K3s join token from `bootstrap_secrets`
+- `server:` -- join URL (agent nodes, and secondary servers)
+
+Implementation: `generate_k3s_config_yaml()` in `server/bootstrap.rs`.
+
+---
+
+## Cluster Test Flow (ami-forge Integration)
+
+When ami-forge runs `cluster-test`, kindling-init is the init system on each
+test instance. The flow:
+
+1. **ami-forge** launches EC2 instances with JSON userdata containing:
+   - `role` ("server" or "agent")
+   - `cluster_name`, `node_index`
+   - `skip_nix_rebuild: true` (AMI already has full config)
+   - `vpn` links with ephemeral WireGuard keys
+   - `bootstrap_secrets` with K3s token
+
+2. **kindling-init.service** starts on boot:
+   - Reads userdata from `/etc/ec2-metadata/user-data`
+   - Writes role sentinel (`/var/lib/kindling/server-mode` or `agent-mode`)
+   - Provisions secrets to `/run/secrets.d/`
+   - Generates `/etc/rancher/k3s/config.yaml` (with role gating)
+   - Sets up WireGuard interface (fast-start, before nixos-rebuild)
+   - Skips nixos-rebuild (AMI is pre-built)
+
+3. **systemd** evaluates `ConditionPathExists` on K3s services:
+   - `k3s.service` starts if `/var/lib/kindling/server-mode` exists
+   - `k3s-agent.service` starts if `/var/lib/kindling/agent-mode` exists
+
+4. **ami-forge** validates via SSH + EC2 tag polling:
+   - WireGuard interface up
+   - K3s nodes Ready
+   - VPN handshakes established
+   - kubectl namespaces accessible
+
+---
+
 ## `skip_nix_rebuild` in ClusterConfig
 
 For integration tests, the AMI already has the full NixOS config. When
