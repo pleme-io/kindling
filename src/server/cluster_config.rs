@@ -52,7 +52,7 @@ pub struct ClusterConfig {
     pub k3s: Option<K3sClusterConfig>,
 
     #[serde(default)]
-    pub kubernetes: Option<serde_json::Value>,
+    pub kubernetes: Option<KubernetesClusterConfig>,
 
     #[serde(default)]
     pub secrets: Option<SecretsClusterConfig>,
@@ -119,6 +119,42 @@ pub struct K3sClusterConfig {
     pub flannel_backend: Option<String>,
     #[serde(flatten)]
     pub extra: serde_json::Value,
+}
+
+/// Kubernetes (kubeadm) distribution options.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KubernetesClusterConfig {
+    /// Kubernetes version (e.g., "1.32.0"). Used in ClusterConfiguration.
+    #[serde(default)]
+    pub version: Option<String>,
+
+    /// Pod network CIDR (default: 10.244.0.0/16 for Flannel/Calico).
+    #[serde(default = "default_pod_cidr")]
+    pub pod_cidr: String,
+
+    /// Service network CIDR (default: 10.96.0.0/12).
+    #[serde(default = "default_service_cidr")]
+    pub service_cidr: String,
+
+    /// kubeadm bootstrap token for joining (e.g., "abcdef.0123456789abcdef").
+    #[serde(default)]
+    pub token: Option<String>,
+
+    /// Certificate key for control plane join (from `kubeadm init --upload-certs`).
+    #[serde(default)]
+    pub certificate_key: Option<String>,
+
+    /// CA certificate hash for secure join (e.g., "sha256:...").
+    #[serde(default)]
+    pub ca_cert_hash: Option<String>,
+
+    /// Extra SANs for the API server certificate.
+    #[serde(default)]
+    pub api_server_cert_sans: Vec<String>,
+
+    /// Container runtime socket (default: containerd).
+    #[serde(default = "default_cri_socket")]
+    pub cri_socket: String,
 }
 
 /// Secrets path references for sops-nix.
@@ -189,6 +225,18 @@ pub struct VpnFirewallClusterConfig {
     pub incoming_udp_port: Option<u32>,
 }
 
+fn default_pod_cidr() -> String {
+    "10.244.0.0/16".to_string()
+}
+
+fn default_service_cidr() -> String {
+    "10.96.0.0/12".to_string()
+}
+
+fn default_cri_socket() -> String {
+    "unix:///run/containerd/containerd.sock".to_string()
+}
+
 fn default_distribution() -> String {
     "k3s".to_string()
 }
@@ -232,6 +280,16 @@ impl ClusterConfig {
     /// Parse from a JSON string.
     pub fn from_json(json: &str) -> Result<Self> {
         serde_json::from_str(json).context("failed to parse cluster config JSON")
+    }
+
+    /// Whether this config targets K3s distribution.
+    pub fn is_k3s(&self) -> bool {
+        self.distribution == "k3s"
+    }
+
+    /// Whether this config targets upstream Kubernetes (kubeadm) distribution.
+    pub fn is_kubernetes(&self) -> bool {
+        self.distribution == "kubernetes"
     }
 
     /// Derive a hostname from cluster name + role + index.

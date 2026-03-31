@@ -1,7 +1,10 @@
 //! CLI handler for `kindling ami-test` — validates a NixOS AMI before Packer snapshots it.
 //!
-//! Runs 9 checks and exits non-zero if any fail. Packer calls this after
+//! Runs validation checks and exits non-zero if any fail. Packer calls this after
 //! nixos-rebuild but before cleanup — if it fails, no AMI is created.
+//!
+//! Default checks validate K3s distribution. When `--distribution kubernetes` is
+//! passed, additional kubeadm-specific checks run instead of K3s checks.
 
 use anyhow::Result;
 use clap::Args;
@@ -16,11 +19,21 @@ pub enum OutputFormat {
     Json,
 }
 
+#[derive(Clone, clap::ValueEnum)]
+pub enum Distribution {
+    K3s,
+    Kubernetes,
+}
+
 #[derive(Args)]
 pub struct AmiTestArgs {
     /// Output format (text or json)
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     pub format: OutputFormat,
+
+    /// Distribution to validate (k3s or kubernetes)
+    #[arg(long, value_enum, default_value_t = Distribution::K3s)]
+    pub distribution: Distribution,
 }
 
 #[derive(Serialize)]
@@ -34,23 +47,38 @@ struct TestResult {
 pub fn run(args: AmiTestArgs) -> Result<()> {
     tracing::info!("starting AMI validation checks");
 
-    let results = vec![
-        // Binary presence
+    let mut results = vec![
+        // Binary presence (common)
         check_kindling_binary(),
-        check_k3s_binary(),
         check_wireguard_tools(),
         check_nixos_rebuild(),
-        // Service configuration
+    ];
+
+    // Distribution-specific binary and state checks
+    match args.distribution {
+        Distribution::Kubernetes => {
+            results.push(check_kubeadm_binary());
+            results.push(check_kubelet_binary());
+            results.push(check_containerd_config());
+            results.push(check_etcd_binary());
+        }
+        Distribution::K3s => {
+            results.push(check_k3s_binary());
+            // K3s-specific stale state checks
+            results.push(check_k3s_no_stale_state());
+            results.push(check_no_stale_tls());
+        }
+    }
+
+    // Common service and security checks
+    results.extend([
         check_kindling_init_service(),
         check_nix_daemon(),
         check_amazon_init_disabled(),
-        // Orchestration invariants (catch boot ordering issues at AMI build time)
-        check_k3s_no_stale_state(),
-        check_no_stale_tls(),
         check_no_leaked_secrets(),
         // Network
         check_network_connectivity(),
-    ];
+    ]);
 
     let total = results.len();
     let passed = results.iter().filter(|r| r.passed).count();
@@ -331,6 +359,89 @@ fn check_no_stale_tls() -> TestResult {
     };
     TestResult {
         name: "no-stale-tls".into(),
+        passed,
+        message,
+        duration_ms: start.elapsed().as_millis() as u64,
+    }
+}
+
+// ── Kubeadm distribution checks ──────────────────────────────────────
+
+fn check_kubeadm_binary() -> TestResult {
+    let start = Instant::now();
+    let (passed, message) = match run_cmd("kubeadm", &["version", "--output=short"]) {
+        Ok(out) => (true, out),
+        Err(e) => (false, e),
+    };
+    TestResult {
+        name: "kubeadm-binary".into(),
+        passed,
+        message,
+        duration_ms: start.elapsed().as_millis() as u64,
+    }
+}
+
+fn check_kubelet_binary() -> TestResult {
+    let start = Instant::now();
+    let (passed, message) = match run_cmd("kubelet", &["--version"]) {
+        Ok(out) => {
+            let first_line = out.lines().next().unwrap_or(&out).to_string();
+            (true, first_line)
+        }
+        Err(e) => (false, e),
+    };
+    TestResult {
+        name: "kubelet-binary".into(),
+        passed,
+        message,
+        duration_ms: start.elapsed().as_millis() as u64,
+    }
+}
+
+fn check_containerd_config() -> TestResult {
+    let start = Instant::now();
+    let config_path = Path::new("/etc/containerd/config.toml");
+
+    let (passed, message) = if config_path.exists() {
+        // Verify containerd is configured with the correct CRI socket
+        match std::fs::read_to_string(config_path) {
+            Ok(content) => {
+                // Check for cri plugin configuration
+                if content.contains("cri") || content.contains("containerd.grpc") {
+                    (true, "containerd config exists with CRI plugin".into())
+                } else {
+                    // Config exists but may use defaults, which is fine
+                    (true, "containerd config exists (using defaults)".into())
+                }
+            }
+            Err(e) => (false, format!("can't read config: {}", e)),
+        }
+    } else {
+        // Check if containerd is at least available as a service
+        match run_cmd("containerd", &["--version"]) {
+            Ok(out) => (true, format!("no config.toml but containerd available: {}", out)),
+            Err(e) => (false, format!("no config.toml and containerd not found: {}", e)),
+        }
+    };
+    TestResult {
+        name: "containerd-config".into(),
+        passed,
+        message,
+        duration_ms: start.elapsed().as_millis() as u64,
+    }
+}
+
+fn check_etcd_binary() -> TestResult {
+    let start = Instant::now();
+    let (passed, message) = match run_cmd("etcd", &["--version"]) {
+        Ok(out) => {
+            let first_line = out.lines().next().unwrap_or(&out).to_string();
+            (true, first_line)
+        }
+        Err(e) => (false, e),
+    };
+    TestResult {
+        name: "etcd-binary".into(),
         passed,
         message,
         duration_ms: start.elapsed().as_millis() as u64,

@@ -18,6 +18,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use super::cluster_config::ClusterConfig;
 use super::health;
+use super::kubeadm;
 use super::wireguard_fast;
 use crate::commands::apply;
 use crate::node_identity::NodeIdentity;
@@ -202,58 +203,106 @@ pub fn run(config_path: &Path) -> Result<()> {
         }
     }
 
-    // Phase: Stop K3s before writing PKI secrets
-    // K3s auto-starts from the AMI config and generates its own CA.
-    // We must stop it, clear stale TLS state, then let it start fresh
-    // with our seeded PKI.
+    // Phase: Stop orchestrator before writing PKI secrets (distribution-aware).
+    // For K3s: stops K3s and clears stale state for deterministic PKI seeding.
+    // For kubeadm: clears any stale etcd/pki state from prior boots.
     if state.phase == BootstrapPhase::ConfigLoaded {
-        // K3s may have auto-started from the AMI config and generated its own
-        // CA certs + datastore. We must halt it and clear ALL state so it starts
-        // fresh with our seeded PKI. K3s reads CA from its datastore on restart —
-        // if the datastore has a different CA, it ignores files on disk.
-        println!("{} Preparing K3s for deterministic PKI seeding", ">>".blue().bold());
-        let k3s_active = std::process::Command::new("systemctl")
-            .args(["is-active", "--quiet", "k3s.service"])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+        let config = ClusterConfig::load(config_path)?;
 
-        if k3s_active {
-            println!("{} Halting K3s before PKI seeding", "::".blue().bold());
-            match std::process::Command::new("systemctl")
-                .args(["stop", "k3s.service"])
-                .output()
-            {
-                Ok(output) if !output.status.success() => {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    println!(
-                        "{} systemctl stop k3s failed (non-fatal): {}",
-                        "!!".yellow().bold(),
-                        stderr.trim()
-                    );
+        if config.is_kubernetes() {
+            // Kubeadm: clear stale kubernetes state for clean init
+            println!("{} Preparing kubeadm for clean bootstrap", ">>".blue().bold());
+            let kubelet_active = std::process::Command::new("systemctl")
+                .args(["is-active", "--quiet", "kubelet.service"])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+
+            if kubelet_active {
+                println!("{} Halting kubelet before bootstrap", "::".blue().bold());
+                match std::process::Command::new("systemctl")
+                    .args(["stop", "kubelet.service"])
+                    .output()
+                {
+                    Ok(output) if !output.status.success() => {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        println!(
+                            "{} systemctl stop kubelet failed (non-fatal): {}",
+                            "!!".yellow().bold(),
+                            stderr.trim()
+                        );
+                    }
+                    Err(e) => {
+                        println!(
+                            "{} systemctl not found (non-fatal): {}",
+                            "!!".yellow().bold(),
+                            e
+                        );
+                    }
+                    _ => {}
                 }
-                Err(e) => {
-                    println!(
-                        "{} systemctl not found (non-fatal): {}",
-                        "!!".yellow().bold(),
-                        e
-                    );
-                }
-                _ => {}
             }
-        }
 
-        // Clear K3s server state (TLS + datastore) for clean PKI seeding.
-        // K3s stores its CA in an embedded SQLite datastore — if that exists
-        // from a prior boot, K3s ignores CA files on disk. Clear everything
-        // so K3s initializes fresh from our seeded PKI files.
-        // provision_bootstrap_secrets (next phase) re-writes all needed files.
-        let server_dir = std::path::Path::new("/var/lib/rancher/k3s/server");
-        if server_dir.exists() {
-            if let Err(e) = std::fs::remove_dir_all(server_dir) {
-                println!("{} Failed to clear K3s server dir: {e}", "!!".yellow().bold());
-            } else {
-                println!("{} Cleared K3s server state for deterministic PKI", "ok".green().bold());
+            // Clear stale Kubernetes PKI and etcd data
+            for dir_path in &["/etc/kubernetes/pki", "/var/lib/etcd"] {
+                let dir = std::path::Path::new(dir_path);
+                if dir.exists() {
+                    if let Err(e) = std::fs::remove_dir_all(dir) {
+                        println!("{} Failed to clear {}: {e}", "!!".yellow().bold(), dir_path);
+                    } else {
+                        println!("{} Cleared {} for clean bootstrap", "ok".green().bold(), dir_path);
+                    }
+                }
+            }
+        } else {
+            // K3s: K3s may have auto-started from the AMI config and generated its own
+            // CA certs + datastore. We must halt it and clear ALL state so it starts
+            // fresh with our seeded PKI. K3s reads CA from its datastore on restart —
+            // if the datastore has a different CA, it ignores files on disk.
+            println!("{} Preparing K3s for deterministic PKI seeding", ">>".blue().bold());
+            let k3s_active = std::process::Command::new("systemctl")
+                .args(["is-active", "--quiet", "k3s.service"])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+
+            if k3s_active {
+                println!("{} Halting K3s before PKI seeding", "::".blue().bold());
+                match std::process::Command::new("systemctl")
+                    .args(["stop", "k3s.service"])
+                    .output()
+                {
+                    Ok(output) if !output.status.success() => {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        println!(
+                            "{} systemctl stop k3s failed (non-fatal): {}",
+                            "!!".yellow().bold(),
+                            stderr.trim()
+                        );
+                    }
+                    Err(e) => {
+                        println!(
+                            "{} systemctl not found (non-fatal): {}",
+                            "!!".yellow().bold(),
+                            e
+                        );
+                    }
+                    _ => {}
+                }
+            }
+
+            // Clear K3s server state (TLS + datastore) for clean PKI seeding.
+            // K3s stores its CA in an embedded SQLite datastore — if that exists
+            // from a prior boot, K3s ignores CA files on disk. Clear everything
+            // so K3s initializes fresh from our seeded PKI files.
+            // provision_bootstrap_secrets (next phase) re-writes all needed files.
+            let server_dir = std::path::Path::new("/var/lib/rancher/k3s/server");
+            if server_dir.exists() {
+                if let Err(e) = std::fs::remove_dir_all(server_dir) {
+                    println!("{} Failed to clear K3s server dir: {e}", "!!".yellow().bold());
+                } else {
+                    println!("{} Cleared K3s server state for deterministic PKI", "ok".green().bold());
+                }
             }
         }
     }
@@ -303,7 +352,7 @@ pub fn run(config_path: &Path) -> Result<()> {
         }
     }
 
-    // Phase: Write K3s config (with optional nixos-rebuild for bare-metal)
+    // Phase: Write orchestrator config (K3s or kubeadm, with optional nixos-rebuild for bare-metal)
     if state.phase == BootstrapPhase::HostnameSet {
         let config = ClusterConfig::load(config_path)?;
 
@@ -373,18 +422,25 @@ pub fn run(config_path: &Path) -> Result<()> {
                 );
             }
 
-            // After rebuild succeeds, also write K3s runtime config
-            write_k3s_runtime_config(&config)?;
+            // After rebuild succeeds, write distribution-specific runtime config
+            write_orchestrator_runtime_config(&config)?;
         } else {
-            // Max-baked AMI path (default) — just write K3s config
-            println!("{} Writing K3s runtime config (max-baked AMI, no rebuild)", ">>".blue().bold());
-            write_k3s_runtime_config(&config)?;
+            // Max-baked AMI path (default) — write distribution-specific config
+            if config.is_kubernetes() {
+                println!("{} Writing kubeadm runtime config (max-baked AMI, no rebuild)", ">>".blue().bold());
+            } else {
+                println!("{} Writing K3s runtime config (max-baked AMI, no rebuild)", ">>".blue().bold());
+            }
+            write_orchestrator_runtime_config(&config)?;
 
-            // K3s will auto-start after kindling-init completes because the
-            // NixOS module sets Before=k3s.service on kindling-init.service.
+            // Service will auto-start after kindling-init completes because the
+            // NixOS module sets Before=<service> on kindling-init.service.
+            let svc = if config.is_kubernetes() { "kubelet.service" } else { "k3s.service" };
             println!(
-                "{} K3s will auto-start after init completes (Before=k3s.service)",
-                "::".blue().bold()
+                "{} {} will auto-start after init completes (Before={})",
+                "::".blue().bold(),
+                svc,
+                svc,
             );
         }
 
@@ -542,6 +598,18 @@ pub fn run(config_path: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Route to the correct orchestrator config writer based on distribution.
+///
+/// - `"k3s"` → `write_k3s_runtime_config`
+/// - `"kubernetes"` → `kubeadm::write_kubeadm_config`
+fn write_orchestrator_runtime_config(config: &ClusterConfig) -> Result<()> {
+    if config.is_kubernetes() {
+        kubeadm::write_kubeadm_config(config)
+    } else {
+        write_k3s_runtime_config(config)
+    }
 }
 
 /// Generate K3s config YAML from a ClusterConfig (pure function, no IO).
@@ -1050,6 +1118,80 @@ const BOOTSTRAP_SECRET_TARGETS: &[SecretTarget] = &[
         file_mode: 0o600,
         base64_decode: true,
     },
+    // ── Kubeadm PKI (upstream Kubernetes) ─────────────────────────
+    // Pre-seeded CA for deterministic kubeconfig. Values are base64-encoded PEM.
+    SecretTarget {
+        key: "kubeadm_ca_crt",
+        dir: "/etc/kubernetes/pki",
+        path: "/etc/kubernetes/pki/ca.crt",
+        dir_mode: 0o755,
+        file_mode: 0o644,
+        base64_decode: true,
+    },
+    SecretTarget {
+        key: "kubeadm_ca_key",
+        dir: "/etc/kubernetes/pki",
+        path: "/etc/kubernetes/pki/ca.key",
+        dir_mode: 0o755,
+        file_mode: 0o600,
+        base64_decode: true,
+    },
+    SecretTarget {
+        key: "kubeadm_sa_key",
+        dir: "/etc/kubernetes/pki",
+        path: "/etc/kubernetes/pki/sa.key",
+        dir_mode: 0o755,
+        file_mode: 0o600,
+        base64_decode: true,
+    },
+    SecretTarget {
+        key: "kubeadm_sa_pub",
+        dir: "/etc/kubernetes/pki",
+        path: "/etc/kubernetes/pki/sa.pub",
+        dir_mode: 0o755,
+        file_mode: 0o644,
+        base64_decode: true,
+    },
+    SecretTarget {
+        key: "kubeadm_front_proxy_ca_crt",
+        dir: "/etc/kubernetes/pki",
+        path: "/etc/kubernetes/pki/front-proxy-ca.crt",
+        dir_mode: 0o755,
+        file_mode: 0o644,
+        base64_decode: true,
+    },
+    SecretTarget {
+        key: "kubeadm_front_proxy_ca_key",
+        dir: "/etc/kubernetes/pki",
+        path: "/etc/kubernetes/pki/front-proxy-ca.key",
+        dir_mode: 0o755,
+        file_mode: 0o600,
+        base64_decode: true,
+    },
+    SecretTarget {
+        key: "kubeadm_etcd_ca_crt",
+        dir: "/etc/kubernetes/pki/etcd",
+        path: "/etc/kubernetes/pki/etcd/ca.crt",
+        dir_mode: 0o755,
+        file_mode: 0o644,
+        base64_decode: true,
+    },
+    SecretTarget {
+        key: "kubeadm_etcd_ca_key",
+        dir: "/etc/kubernetes/pki/etcd",
+        path: "/etc/kubernetes/pki/etcd/ca.key",
+        dir_mode: 0o755,
+        file_mode: 0o600,
+        base64_decode: true,
+    },
+    SecretTarget {
+        key: "kubeadm_token",
+        dir: "/var/lib/kindling",
+        path: "/var/lib/kindling/kubeadm-token",
+        dir_mode: 0o700,
+        file_mode: 0o600,
+        base64_decode: false,
+    },
 ];
 
 /// Write a secret value to a file with restrictive permissions.
@@ -1521,6 +1663,44 @@ mod tests {
         assert!(yaml.contains("disable-network-policy: true"));
         assert!(yaml.contains("tls-san:"));
         assert!(yaml.contains("10.99.0.1"));
+    }
+
+    // ── Distribution routing tests ──────────────────────────────────
+
+    #[test]
+    fn k3s_distribution_generates_k3s_config() {
+        let config = ClusterConfig::from_json(
+            r#"{"cluster_name":"test","distribution":"k3s","cluster_init":true,"bootstrap_secrets":{"k3s_server_token":"tok"}}"#,
+        )
+        .unwrap();
+        assert!(config.is_k3s());
+        assert!(!config.is_kubernetes());
+        // K3s config generation should work
+        let yaml = generate_k3s_config_yaml(&config).unwrap();
+        assert!(yaml.contains("node-name:"));
+        assert!(yaml.contains("cluster-init: true"));
+    }
+
+    #[test]
+    fn kubernetes_distribution_generates_kubeadm_config() {
+        let config = ClusterConfig::from_json(
+            r#"{"cluster_name":"test","distribution":"kubernetes","cluster_init":true,"role":"server","kubernetes":{"version":"1.32.0","token":"abcdef.0123456789ab"}}"#,
+        )
+        .unwrap();
+        assert!(!config.is_k3s());
+        assert!(config.is_kubernetes());
+        // Kubeadm config generation should work
+        let yaml = kubeadm::generate_kubeadm_config(&config).unwrap();
+        assert!(yaml.contains("kind: ClusterConfiguration"));
+        assert!(yaml.contains("kind: InitConfiguration"));
+    }
+
+    #[test]
+    fn default_distribution_is_k3s() {
+        let config = ClusterConfig::from_json(r#"{"cluster_name":"test"}"#).unwrap();
+        assert!(config.is_k3s());
+        assert!(!config.is_kubernetes());
+        assert_eq!(config.distribution, "k3s");
     }
 
     // ── EC2 tag reporting tests ────────────────────────────────────

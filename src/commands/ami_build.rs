@@ -135,6 +135,7 @@ pub fn run(args: AmiBuildArgs) -> Result<()> {
 
         ami_test::run(ami_test::AmiTestArgs {
             format: ami_test::OutputFormat::Text,
+            distribution: ami_test::Distribution::K3s,
         })
         .context("AMI validation failed — AMI will NOT be created")?;
 

@@ -82,7 +82,39 @@ FluxcdBootstrapping → FluxcdReady → Complete
 
 State persists to `/var/lib/kindling/server-state.json` -- re-running resumes
 from the last good phase. The role sentinel file (see above) is written during
-the `write_k3s_runtime_config` step within the K3s config generation phase.
+the orchestrator config step (K3s or kubeadm, based on `distribution` field).
+
+---
+
+## Multi-Distribution Support
+
+The `distribution` field in `ClusterConfig` selects the Kubernetes distribution:
+
+- `"k3s"` (default) -- existing K3s pipeline via `generate_k3s_config_yaml` + `write_k3s_runtime_config`
+- `"kubernetes"` -- upstream kubeadm via `kubeadm::generate_kubeadm_config` + `kubeadm::write_kubeadm_config`
+
+The bootstrap state machine is distribution-aware: the orchestrator config phase
+routes to the correct config generator. All other phases (WireGuard, secrets,
+identity, FluxCD) are shared. Helper methods `is_k3s()` and `is_kubernetes()`
+on `ClusterConfig` make routing explicit.
+
+### Kubeadm Config Generation (`server/kubeadm.rs`)
+
+- **CP init** (`cluster_init: true`, `role: "server"`): generates `ClusterConfiguration` + `InitConfiguration` YAML
+  - API server advertise address from VPN IP
+  - cert SANs from explicit config + VPN addresses
+  - etcd local datadir, pod/service CIDRs, bootstrap token
+- **Join** (workers or secondary CP): generates `JoinConfiguration` YAML
+  - Discovery via bootstrap token + CA cert hash
+  - CP join includes `controlPlane` stanza with advertise address + certificate key
+
+Config written to `/etc/kubernetes/kubeadm-config.yaml`. The NixOS profile
+(`k8s-cloud-server`) provides kubelet, containerd, etcd, kubeadm via nixpkgs.
+
+### AMI Validation (`kindling ami-test --distribution kubernetes`)
+
+Kubernetes AMIs validate: `kubeadm-binary`, `kubelet-binary`, `containerd-config`, `etcd-binary`
+instead of K3s-specific checks.
 
 ---
 
@@ -230,8 +262,9 @@ src/
     vpn.rs            WireGuard key management
     ...
   server/
-    bootstrap.rs      14-phase bootstrap state machine
+    bootstrap.rs      14-phase bootstrap state machine (distribution-aware)
     cluster_config.rs ClusterConfig type (skip_nix_rebuild, vpn, bootstrap_secrets)
+    kubeadm.rs        Kubeadm config generation (init + join YAML)
     wireguard_fast.rs Fast WireGuard setup (before nixos-rebuild)
     health.rs         K3s + FluxCD health checks
   vpn/                VPN link management
