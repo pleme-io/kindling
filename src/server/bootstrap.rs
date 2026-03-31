@@ -563,6 +563,12 @@ pub fn run(config_path: &Path) -> Result<()> {
 fn generate_k3s_config_yaml(config: &ClusterConfig) -> Result<String> {
     let mut lines: Vec<String> = Vec::new();
 
+    // Unique node name — prevents K3s duplicate hostname rejection when
+    // multiple nodes share the same base hostname (e.g., AMI-built nodes
+    // all have hostname "ami-builder").
+    let node_name = config.derive_hostname();
+    lines.push(format!("node-name: \"{}\"", node_name));
+
     // Cluster init vs join
     if let Some(ref join) = config.join_server {
         lines.push(format!("server: \"{}\"", join));
@@ -1444,6 +1450,7 @@ mod tests {
         )
         .unwrap();
         let yaml = generate_k3s_config_yaml(&config).unwrap();
+        assert!(yaml.contains("node-name: \"test-server-0\""));
         assert!(yaml.contains("cluster-init: true"));
         assert!(yaml.contains("token: \"test-token\""));
         assert!(yaml.contains("disable-network-policy: true"));
@@ -1457,6 +1464,7 @@ mod tests {
         )
         .unwrap();
         let yaml = generate_k3s_config_yaml(&config).unwrap();
+        assert!(yaml.contains("node-name: \"test-server-0\""));
         assert!(yaml.contains("server: \"https://1.2.3.4:6443\""));
         assert!(!yaml.contains("cluster-init"));
         assert!(yaml.contains("token: \"join-token\""));
@@ -1487,11 +1495,12 @@ mod tests {
         // Agent config must NOT include server-only keys that crash `k3s agent`:
         // disable-network-policy, tls-san, cluster-init
         let config = ClusterConfig::from_json(
-            r#"{"cluster_name":"test","role":"agent","join_server":"https://1.2.3.4:6443","skip_nix_rebuild":true,"bootstrap_secrets":{"k3s_server_token":"tok"},"vpn":{"require_liveness":false,"links":[{"name":"wg-test","address":"10.99.0.2/24","private_key_file":"/tmp/key","peers":[],"firewall":{"trust_interface":false,"allowed_tcp_ports":[],"allowed_udp_ports":[]}}]}}"#,
+            r#"{"cluster_name":"test","role":"agent","node_index":1,"join_server":"https://1.2.3.4:6443","skip_nix_rebuild":true,"bootstrap_secrets":{"k3s_server_token":"tok"},"vpn":{"require_liveness":false,"links":[{"name":"wg-test","address":"10.99.0.2/24","private_key_file":"/tmp/key","peers":[],"firewall":{"trust_interface":false,"allowed_tcp_ports":[],"allowed_udp_ports":[]}}]}}"#,
         )
         .unwrap();
         let yaml = generate_k3s_config_yaml(&config).unwrap();
-        // Agent should have server URL and token
+        // Agent should have unique node name, server URL, and token
+        assert!(yaml.contains("node-name: \"test-agent-1\""));
         assert!(yaml.contains("server: \"https://1.2.3.4:6443\""));
         assert!(yaml.contains("token: \"tok\""));
         // Agent must NOT have server-only flags
