@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Serialize)]
@@ -51,16 +51,16 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
     })
 }
 
-fn status_from_path(path: &PathBuf) -> NixStatus {
+fn status_from_path(path: &Path) -> NixStatus {
     let version = parse_version(path);
     NixStatus {
         installed: true,
         version,
-        nix_path: Some(path.clone()),
+        nix_path: Some(path.to_path_buf()),
     }
 }
 
-fn parse_version(nix_path: &PathBuf) -> Option<semver::Version> {
+fn parse_version(nix_path: &Path) -> Option<semver::Version> {
     let output = Command::new(nix_path)
         .arg("--version")
         .output()

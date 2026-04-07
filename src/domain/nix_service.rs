@@ -362,7 +362,7 @@ impl NixService {
         stdout.trim().rsplit(' ').next().map(|s| s.to_string())
     }
 
-    fn detect_install_method(&self, nix_path: &PathBuf) -> Option<String> {
+    fn detect_install_method(&self, nix_path: &std::path::Path) -> Option<String> {
         let path_str = nix_path.to_string_lossy();
         if path_str.contains("determinate") {
             Some("determinate".to_string())
