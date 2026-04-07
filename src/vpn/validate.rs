@@ -124,10 +124,10 @@ pub fn validate_endpoint(endpoint: &str) -> bool {
 }
 
 /// Validate a key file exists and has secure permissions.
-pub fn validate_key_file(errors: &mut Vec<String>, ctx: &str, field: &str, path: &str) {
-    let p = Path::new(path);
+pub fn validate_key_file(errors: &mut Vec<String>, ctx: &str, field: &str, path: impl AsRef<Path>) {
+    let p = path.as_ref();
     if !p.exists() {
-        errors.push(format!("{}: {} '{}' does not exist on disk", ctx, field, path));
+        errors.push(format!("{}: {} '{}' does not exist on disk", ctx, field, p.display()));
         return;
     }
     #[cfg(unix)]
@@ -139,7 +139,7 @@ pub fn validate_key_file(errors: &mut Vec<String>, ctx: &str, field: &str, path:
                 errors.push(format!(
                     "{}: {} '{}' has insecure permissions {:o} \
                      (must not be group/world-readable, expected 0400 or 0600)",
-                    ctx, field, path, mode
+                    ctx, field, p.display(), mode
                 ));
             }
         }
