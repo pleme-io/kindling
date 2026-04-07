@@ -686,12 +686,13 @@ fn generate_k3s_config_yaml(config: &ClusterConfig) -> Result<String> {
     }
 
     // Token from bootstrap_secrets
-    if let Some(ref secrets) = config.bootstrap_secrets {
-        if let Some(token) = secrets.get("k3s_server_token") {
-            if !token.is_empty() {
-                lines.push(format!("token: \"{}\"", token));
-            }
-        }
+    if let Some(token) = config
+        .bootstrap_secrets
+        .as_ref()
+        .and_then(|s| s.get("k3s_server_token"))
+        .filter(|t| !t.is_empty())
+    {
+        lines.push(format!("token: \"{}\"", token));
     }
 
     // Server-only config keys: these are only valid for `k3s server`, not
@@ -705,27 +706,19 @@ fn generate_k3s_config_yaml(config: &ClusterConfig) -> Result<String> {
         lines.push("disable-network-policy: true".to_string());
 
         // TLS SANs — include VPN addresses so K3s cert is valid for VPN connections
-        let mut sans: Vec<String> = Vec::new();
-        if let Some(ref k3s) = config.k3s {
-            for san in &k3s.tls_san {
-                sans.push(san.clone());
-            }
-        }
-        // Add VPN addresses as SANs (strip /24 mask)
-        if let Some(ref vpn) = config.vpn {
-            for link in &vpn.links {
-                if let Some(ref addr) = link.address {
-                    if let Some(ip) = addr.split('/').next() {
-                        sans.push(ip.to_string());
-                    }
-                }
-            }
-        }
+        let explicit_sans = config.k3s.iter().flat_map(|k| k.tls_san.iter().cloned());
+        let vpn_sans = config
+            .vpn
+            .iter()
+            .flat_map(|v| &v.links)
+            .filter_map(|l| l.address.as_deref())
+            .filter_map(|addr| addr.split('/').next())
+            .map(str::to_string);
+        let sans: Vec<String> = explicit_sans.chain(vpn_sans).collect();
+
         if !sans.is_empty() {
             lines.push("tls-san:".to_string());
-            for san in &sans {
-                lines.push(format!("  - \"{}\"", san));
-            }
+            lines.extend(sans.iter().map(|san| format!("  - \"{}\"", san)));
         }
     }
 
