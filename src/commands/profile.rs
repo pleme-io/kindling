@@ -47,10 +47,9 @@ pub fn list() -> Result<()> {
 
     for p in PROFILES {
         println!(
-            "  {} {} {}",
+            "  {} {} ",
             p.name.green().bold(),
-            format!("({})", p.platform).dimmed(),
-            ""
+            format!("({})", p.platform).dimmed()
         );
         println!("    {}", p.description);
     }

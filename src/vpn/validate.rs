@@ -228,7 +228,7 @@ pub fn validate_vpn_links(links: &[VpnLink<'_>], check_files: bool) -> Result<()
         // 10 + 11. Profile-specific firewall enforcement
         let is_k8s_profile = link
             .profile
-            .map_or(false, |p| p.starts_with("k8s-"));
+            .is_some_and(|p| p.starts_with("k8s-"));
         if is_k8s_profile {
             if let Some(fw) = firewall {
                 if fw.trust_interface {
@@ -263,7 +263,7 @@ pub fn validate_vpn_links(links: &[VpnLink<'_>], check_files: bool) -> Result<()
 
         // Listen port range validation
         if let Some(port) = link.listen_port {
-            if port != 0 && (port < 1024 || port > 65535) {
+            if port != 0 && !(1024..=65535).contains(&port) {
                 errors.push(format!(
                     "{}: listen_port {} is outside valid range (must be 0 for random, or 1024-65535)",
                     ctx, port

@@ -84,16 +84,12 @@ impl Default for TelemetryConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct GcConfig {
     #[serde(default)]
     pub schedule_secs: u64,
 }
 
-impl Default for GcConfig {
-    fn default() -> Self {
-        Self { schedule_secs: 0 }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReportConfig {
@@ -119,6 +115,7 @@ impl Default for ReportConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct IdentityConfig {
     /// Extra directories to scan for identity overlay YAML files.
     #[serde(default)]
@@ -128,14 +125,6 @@ pub struct IdentityConfig {
     pub private_fields: Vec<String>,
 }
 
-impl Default for IdentityConfig {
-    fn default() -> Self {
-        Self {
-            overlay_dirs: Vec::new(),
-            private_fields: Vec::new(),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FleetControllerConfig {

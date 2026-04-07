@@ -108,7 +108,7 @@ fn extract_json_from_heredoc(script: &str) -> Result<String> {
     let mut found_start = false;
 
     // Scan for the heredoc opening line
-    while let Some(line) = lines.next() {
+    for line in lines.by_ref() {
         // Match patterns like:
         //   cat << 'PANGEA_CONFIG_EOF' > /path
         //   cat <<'PANGEA_CONFIG_EOF'

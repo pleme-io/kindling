@@ -143,11 +143,11 @@ impl NixService {
         let get_str = |key: &str| -> Option<String> {
             json.get(key)
                 .and_then(|v| v.get("value"))
-                .and_then(|v| {
+                .map(|v| {
                     if let Some(s) = v.as_str() {
-                        Some(s.to_string())
+                        s.to_string()
                     } else {
-                        Some(v.to_string())
+                        v.to_string()
                     }
                 })
         };

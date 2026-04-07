@@ -24,19 +24,16 @@ pub struct Node {
 
 /// Node connectivity/health status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Enum)]
+#[derive(Default)]
 pub enum NodeStatus {
     Online,
     Offline,
     Degraded,
     Maintenance,
+    #[default]
     Unknown,
 }
 
-impl Default for NodeStatus {
-    fn default() -> Self {
-        Self::Unknown
-    }
-}
 
 /// A single drift between declared (identity) and actual (report) state.
 #[derive(Debug, Clone, Serialize, Deserialize, SimpleObject)]

@@ -35,13 +35,12 @@ pub fn run(
             println!("{} Nix already installed", "ok".green().bold());
         }
     } else {
-        if !no_confirm {
-            if !confirm("Nix is not installed. Install it now?")? {
+        if !no_confirm
+            && !confirm("Nix is not installed. Install it now?")? {
                 println!("{} Skipping nix install", "::".blue().bold());
                 println!("   Run `kindling install` when you're ready.");
                 return Ok(());
             }
-        }
         install::install_now()?;
         // Fix PATH so subsequent steps can find nix
         tools::prepend_nix_profile_to_path();
@@ -143,7 +142,7 @@ pub fn run(
 
             let username = user
                 .as_deref()
-                .unwrap_or_else(|| {
+                .unwrap_or({
                     // Would use std::env::var but need static lifetime
                     "user"
                 });

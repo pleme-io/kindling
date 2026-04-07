@@ -126,7 +126,7 @@ fn print_value(value: &serde_json::Value, indent: usize) {
                         } else if arr.iter().all(|v| !v.is_object() && !v.is_array()) {
                             // Simple array: print inline
                             let items: Vec<String> =
-                                arr.iter().map(|v| format_scalar(v)).collect();
+                                arr.iter().map(format_scalar).collect();
                             println!("{}{}: {}", pad, key, items.join(", "));
                         } else {
                             println!("{}{}:", pad, key);
