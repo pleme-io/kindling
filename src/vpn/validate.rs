@@ -563,4 +563,249 @@ mod tests {
         let err = validate_vpn_links(&[link], false).unwrap_err();
         assert!(err.to_string().contains("unknown profile"));
     }
+
+    // ── validate_key_file tests ──────────────────────────────
+
+    #[test]
+    fn validate_key_file_nonexistent() {
+        let mut errors = Vec::new();
+        validate_key_file(&mut errors, "test-ctx", "private_key_file", "/nonexistent/key");
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("does not exist on disk"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_key_file_insecure_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("key");
+        std::fs::write(&key_path, "secret").unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let mut errors = Vec::new();
+        validate_key_file(&mut errors, "ctx", "field", key_path.to_str().unwrap());
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("insecure permissions"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_key_file_secure_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("key");
+        std::fs::write(&key_path, "secret").unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let mut errors = Vec::new();
+        validate_key_file(&mut errors, "ctx", "field", key_path.to_str().unwrap());
+        assert!(errors.is_empty());
+    }
+
+    // ── Interface name character validation ──────────────────────────────
+
+    #[test]
+    fn rejects_interface_with_special_chars() {
+        let ips = valid_allowed_ips();
+        let mut link = make_valid_link(&ips);
+        link.name = "wg_0";
+        let err = validate_vpn_links(&[link], false).unwrap_err();
+        assert!(err.to_string().contains("invalid characters"));
+    }
+
+    #[test]
+    fn rejects_empty_interface_name() {
+        let ips = valid_allowed_ips();
+        let mut link = make_valid_link(&ips);
+        link.name = "";
+        let err = validate_vpn_links(&[link], false).unwrap_err();
+        assert!(err.to_string().contains("name must not be empty"));
+    }
+
+    #[test]
+    fn accepts_15_char_interface_name() {
+        let ips = valid_allowed_ips();
+        let mut link = make_valid_link(&ips);
+        link.name = "wg-exactly15chr";
+        assert_eq!(link.name.len(), 15);
+        assert!(validate_vpn_links(&[link], false).is_ok());
+    }
+
+    // ── Missing address ──────────────────────────────
+
+    #[test]
+    fn rejects_missing_address() {
+        let ips = valid_allowed_ips();
+        let mut link = make_valid_link(&ips);
+        link.address = None;
+        let err = validate_vpn_links(&[link], false).unwrap_err();
+        assert!(err.to_string().contains("address is required"));
+    }
+
+    // ── Missing firewall ──────────────────────────────
+
+    #[test]
+    fn rejects_missing_firewall() {
+        let ips = valid_allowed_ips();
+        let mut link = make_valid_link(&ips);
+        link.firewall = None;
+        let err = validate_vpn_links(&[link], false).unwrap_err();
+        assert!(err.to_string().contains("firewall config is required"));
+    }
+
+    // ── Duplicate link names ──────────────────────────────
+
+    #[test]
+    fn rejects_duplicate_link_names() {
+        let ips = valid_allowed_ips();
+        let link1 = make_valid_link(&ips);
+        let ips2 = valid_allowed_ips();
+        let mut link2 = make_valid_link(&ips2);
+        link2.listen_port = Some(51822);
+        link2.address = Some("10.100.2.1/24");
+        let err = validate_vpn_links(&[link1, link2], false).unwrap_err();
+        assert!(err.to_string().contains("duplicate link name"));
+    }
+
+    // ── Privileged port ──────────────────────────────
+
+    #[test]
+    fn rejects_privileged_listen_port() {
+        let ips = valid_allowed_ips();
+        let mut link = make_valid_link(&ips);
+        link.listen_port = Some(80);
+        let err = validate_vpn_links(&[link], false).unwrap_err();
+        assert!(err.to_string().contains("outside valid range"));
+    }
+
+    // ── No peers ──────────────────────────────
+
+    #[test]
+    fn rejects_no_peers() {
+        let ips = valid_allowed_ips();
+        let mut link = make_valid_link(&ips);
+        link.peers = vec![];
+        let err = validate_vpn_links(&[link], false).unwrap_err();
+        assert!(err.to_string().contains("at least one peer is required"));
+    }
+
+    // ── Peer missing public key ──────────────────────────────
+
+    #[test]
+    fn rejects_peer_missing_public_key() {
+        let ips = valid_allowed_ips();
+        let mut link = make_valid_link(&ips);
+        link.peers[0].public_key = None;
+        let err = validate_vpn_links(&[link], false).unwrap_err();
+        assert!(err.to_string().contains("public_key is required"));
+    }
+
+    // ── IPv6 full tunnel ──────────────────────────────
+
+    #[test]
+    fn rejects_ipv6_full_tunnel() {
+        let full_tunnel = vec!["::/0".to_string()];
+        static EMPTY_TCP: [u32; 0] = [];
+        static EMPTY_UDP: [u32; 0] = [];
+        let link = VpnLink {
+            name: "wg-test",
+            private_key_file: Some("/tmp/key"),
+            listen_port: None,
+            address: Some("10.100.1.1/24"),
+            profile: Some("site-to-site"),
+            persistent_keepalive: None,
+            peers: vec![VpnPeer {
+                public_key: Some("AAAA"),
+                endpoint: Some("1.2.3.4:51820"),
+                allowed_ips: &full_tunnel,
+                persistent_keepalive: None,
+                preshared_key_file: Some("/tmp/psk"),
+            }],
+            firewall: Some(VpnFirewall {
+                trust_interface: false,
+                allowed_tcp_ports: &EMPTY_TCP,
+                allowed_udp_ports: &EMPTY_UDP,
+                incoming_udp_port: None,
+            }),
+        };
+        let err = validate_vpn_links(&[link], false).unwrap_err();
+        assert!(err.to_string().contains("full tunnel forbidden"));
+    }
+
+    // ── check_files validates key files on disk ──────────────────────────────
+
+    #[test]
+    fn check_files_reports_missing_private_key() {
+        let ips = valid_allowed_ips();
+        let mut link = make_valid_link(&ips);
+        link.private_key_file = Some("/nonexistent/private.key");
+        let err = validate_vpn_links(&[link], true).unwrap_err();
+        assert!(err.to_string().contains("does not exist on disk"));
+    }
+
+    // ── Profile-specific enforcement ──────────────────────────────
+
+    #[test]
+    fn k8s_profile_rejects_trust_interface() {
+        let ips = valid_allowed_ips();
+        static TCP_PORTS: [u32; 1] = [6443];
+        static EMPTY_UDP: [u32; 0] = [];
+        let link = VpnLink {
+            name: "wg-test",
+            private_key_file: Some("/tmp/key"),
+            listen_port: Some(51821),
+            address: Some("10.100.1.1/24"),
+            profile: Some("k8s-control-plane"),
+            persistent_keepalive: None,
+            peers: vec![VpnPeer {
+                public_key: Some("AAAA"),
+                endpoint: Some("1.2.3.4:51820"),
+                allowed_ips: &ips,
+                persistent_keepalive: None,
+                preshared_key_file: Some("/tmp/psk"),
+            }],
+            firewall: Some(VpnFirewall {
+                trust_interface: true,
+                allowed_tcp_ports: &TCP_PORTS,
+                allowed_udp_ports: &EMPTY_UDP,
+                incoming_udp_port: Some(51821),
+            }),
+        };
+        let err = validate_vpn_links(&[link], false).unwrap_err();
+        assert!(err.to_string().contains("trust_interface must be false"));
+    }
+
+    // ── No profile skips profile-specific checks ──────────────────────────────
+
+    #[test]
+    fn no_profile_allows_trust_interface() {
+        let ips = valid_allowed_ips();
+        static TCP_PORTS: [u32; 1] = [6443];
+        static EMPTY_UDP: [u32; 0] = [];
+        let link = VpnLink {
+            name: "wg-test",
+            private_key_file: Some("/tmp/key"),
+            listen_port: Some(51821),
+            address: Some("10.100.1.1/24"),
+            profile: None,
+            persistent_keepalive: None,
+            peers: vec![VpnPeer {
+                public_key: Some("AAAA"),
+                endpoint: Some("1.2.3.4:51820"),
+                allowed_ips: &ips,
+                persistent_keepalive: None,
+                preshared_key_file: Some("/tmp/psk"),
+            }],
+            firewall: Some(VpnFirewall {
+                trust_interface: true,
+                allowed_tcp_ports: &TCP_PORTS,
+                allowed_udp_ports: &EMPTY_UDP,
+                incoming_udp_port: Some(51821),
+            }),
+        };
+        assert!(validate_vpn_links(&[link], false).is_ok());
+    }
 }
