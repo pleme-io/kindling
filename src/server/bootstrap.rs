@@ -46,11 +46,41 @@ pub enum BootstrapPhase {
 
 impl std::fmt::Display for BootstrapPhase {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = serde_json::to_value(self)
-            .ok()
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_else(|| format!("{:?}", self));
+        let s = match self {
+            Self::Pending => "pending",
+            Self::ConfigLoaded => "config_loaded",
+            Self::SecretsProvisioned => "secrets_provisioned",
+            Self::HostnameSet => "hostname_set",
+            Self::K3sConfigWritten => "k3s_config_written",
+            Self::WireguardStarted => "wireguard_started",
+            Self::WireguardReady => "wireguard_ready",
+            Self::FluxcdConfigWritten => "fluxcd_config_written",
+            Self::Complete => "complete",
+            Self::Failed => "failed",
+        };
         write!(f, "{}", s)
+    }
+}
+
+impl std::str::FromStr for BootstrapPhase {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "pending" => Ok(Self::Pending),
+            "config_loaded" => Ok(Self::ConfigLoaded),
+            "secrets_provisioned" => Ok(Self::SecretsProvisioned),
+            "hostname_set" | "wireguard_fast_start" => Ok(Self::HostnameSet),
+            "k3s_config_written" | "identity_written" | "nix_rebuild_running"
+            | "nix_rebuild_complete" => Ok(Self::K3sConfigWritten),
+            "wireguard_started" | "wireguard_waiting" => Ok(Self::WireguardStarted),
+            "wireguard_ready" => Ok(Self::WireguardReady),
+            "fluxcd_config_written" | "k3s_waiting" | "k3s_ready" | "fluxcd_bootstrapping"
+            | "fluxcd_ready" => Ok(Self::FluxcdConfigWritten),
+            "complete" => Ok(Self::Complete),
+            "failed" => Ok(Self::Failed),
+            other => bail!("unknown bootstrap phase: {}", other),
+        }
     }
 }
 
@@ -1473,6 +1503,52 @@ mod tests {
         assert_eq!(BootstrapPhase::FluxcdConfigWritten.to_string(), "fluxcd_config_written");
         assert_eq!(BootstrapPhase::Complete.to_string(), "complete");
         assert_eq!(BootstrapPhase::Failed.to_string(), "failed");
+    }
+
+    #[test]
+    fn bootstrap_phase_fromstr_roundtrip() {
+        let phases = [
+            BootstrapPhase::Pending,
+            BootstrapPhase::ConfigLoaded,
+            BootstrapPhase::SecretsProvisioned,
+            BootstrapPhase::HostnameSet,
+            BootstrapPhase::K3sConfigWritten,
+            BootstrapPhase::WireguardStarted,
+            BootstrapPhase::WireguardReady,
+            BootstrapPhase::FluxcdConfigWritten,
+            BootstrapPhase::Complete,
+            BootstrapPhase::Failed,
+        ];
+        for phase in &phases {
+            let s = phase.to_string();
+            let parsed: BootstrapPhase = s.parse().unwrap();
+            assert_eq!(*phase, parsed, "round-trip failed for {s}");
+        }
+    }
+
+    #[test]
+    fn bootstrap_phase_fromstr_aliases() {
+        let aliases = [
+            ("wireguard_fast_start", BootstrapPhase::HostnameSet),
+            ("identity_written", BootstrapPhase::K3sConfigWritten),
+            ("nix_rebuild_running", BootstrapPhase::K3sConfigWritten),
+            ("nix_rebuild_complete", BootstrapPhase::K3sConfigWritten),
+            ("wireguard_waiting", BootstrapPhase::WireguardStarted),
+            ("k3s_waiting", BootstrapPhase::FluxcdConfigWritten),
+            ("k3s_ready", BootstrapPhase::FluxcdConfigWritten),
+            ("fluxcd_bootstrapping", BootstrapPhase::FluxcdConfigWritten),
+            ("fluxcd_ready", BootstrapPhase::FluxcdConfigWritten),
+        ];
+        for (input, expected) in &aliases {
+            let parsed: BootstrapPhase = input.parse().unwrap();
+            assert_eq!(parsed, *expected, "alias {input} should map to {expected:?}");
+        }
+    }
+
+    #[test]
+    fn bootstrap_phase_fromstr_unknown() {
+        let result: std::result::Result<BootstrapPhase, _> = "nonexistent".parse();
+        assert!(result.is_err());
     }
 
     #[test]
