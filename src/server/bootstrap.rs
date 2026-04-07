@@ -95,6 +95,18 @@ pub struct BootstrapState {
     pub updated_at: String,
 }
 
+impl Default for BootstrapState {
+    fn default() -> Self {
+        Self {
+            phase: BootstrapPhase::Pending,
+            config_path: String::new(),
+            cluster_name: String::new(),
+            error: None,
+            updated_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+}
+
 impl BootstrapState {
     fn state_path() -> PathBuf {
         PathBuf::from("/var/lib/kindling/server-state.json")
@@ -110,12 +122,9 @@ impl BootstrapState {
                 }
             }
         }
-        BootstrapState {
-            phase: BootstrapPhase::Pending,
+        Self {
             config_path: config_path.to_string(),
-            cluster_name: String::new(),
-            error: None,
-            updated_at: chrono::Utc::now().to_rfc3339(),
+            ..Default::default()
         }
     }
 

@@ -27,6 +27,34 @@ pub struct FluxcdHealthStatus {
     pub message: String,
 }
 
+/// Count items in a Kubernetes resource list that have a `Ready=True` condition.
+fn count_ready_items(resource_list: &serde_json::Value) -> (u32, u32) {
+    let items = resource_list["items"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0) as u32;
+
+    let ready = resource_list["items"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter(|item| {
+                    item["status"]["conditions"]
+                        .as_array()
+                        .is_some_and(|conds| {
+                            conds.iter().any(|c| {
+                                c["type"].as_str() == Some("Ready")
+                                    && c["status"].as_str() == Some("True")
+                            })
+                        })
+                })
+                .count()
+        })
+        .unwrap_or(0) as u32;
+
+    (items, ready)
+}
+
 /// Check if K3s API server is reachable and nodes are ready.
 pub fn check_k3s_health() -> Result<K3sHealthStatus> {
     let output = Command::new("kubectl")
@@ -48,38 +76,17 @@ pub fn check_k3s_health() -> Result<K3sHealthStatus> {
     let nodes: serde_json::Value =
         serde_json::from_str(&stdout).context("failed to parse kubectl output")?;
 
-    let items = nodes["items"].as_array().map(|a| a.len()).unwrap_or(0) as u32;
-
-    let ready_count = nodes["items"]
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter(|node| {
-                    node["status"]["conditions"]
-                        .as_array()
-                        .map(|conds| {
-                            conds.iter().any(|c| {
-                                c["type"].as_str() == Some("Ready")
-                                    && c["status"].as_str() == Some("True")
-                            })
-                        })
-                        .unwrap_or(false)
-                })
-                .count()
-        })
-        .unwrap_or(0) as u32;
-
-    let ready = items > 0 && ready_count == items;
+    let (total, ready_count) = count_ready_items(&nodes);
+    let ready = total > 0 && ready_count == total;
     let message = if ready {
-        format!("{}/{} nodes ready", ready_count, items)
+        format!("{}/{} nodes ready", ready_count, total)
     } else {
-        format!("{}/{} nodes ready (waiting)", ready_count, items)
+        format!("{}/{} nodes ready (waiting)", ready_count, total)
     };
 
     Ok(K3sHealthStatus {
         ready,
-        node_count: items,
+        node_count: total,
         ready_nodes: ready_count,
         message,
     })
@@ -112,44 +119,23 @@ pub fn check_fluxcd_health() -> Result<FluxcdHealthStatus> {
     let ks: serde_json::Value =
         serde_json::from_str(&stdout).context("failed to parse kubectl output")?;
 
-    let items = ks["items"].as_array().map(|a| a.len()).unwrap_or(0) as u32;
-
-    let ready_count = ks["items"]
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter(|ks_item| {
-                    ks_item["status"]["conditions"]
-                        .as_array()
-                        .map(|conds| {
-                            conds.iter().any(|c| {
-                                c["type"].as_str() == Some("Ready")
-                                    && c["status"].as_str() == Some("True")
-                            })
-                        })
-                        .unwrap_or(false)
-                })
-                .count()
-        })
-        .unwrap_or(0) as u32;
-
-    let ready = items > 0 && ready_count == items;
+    let (total, ready_count) = count_ready_items(&ks);
+    let ready = total > 0 && ready_count == total;
     let message = if ready {
-        format!("{}/{} kustomizations ready", ready_count, items)
-    } else if items == 0 {
+        format!("{}/{} kustomizations ready", ready_count, total)
+    } else if total == 0 {
         "no kustomizations found (FluxCD may not be installed)".to_string()
     } else {
         format!(
             "{}/{} kustomizations ready (waiting)",
-            ready_count, items
+            ready_count, total
         )
     };
 
     Ok(FluxcdHealthStatus {
         ready,
         kustomizations_ready: ready_count,
-        kustomizations_total: items,
+        kustomizations_total: total,
         message,
     })
 }
