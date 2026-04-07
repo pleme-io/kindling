@@ -4,6 +4,8 @@
 //! - macOS: sysctl, system_profiler, vm_stat, sw_vers, networksetup, pmset, lsof
 //! - Linux: /proc/*, /sys/*, ip, ss, lspci, systemctl, uname
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use chrono::Utc;
 use tokio::process::Command;
