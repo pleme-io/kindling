@@ -71,7 +71,77 @@ fn parse_version(nix_path: &PathBuf) -> Option<semver::Version> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Format: "nix (Nix) 2.24.12"
-    let version_str = stdout.trim().rsplit(' ').next()?;
+    parse_version_string(&stdout)
+}
+
+/// Parse a Nix version from its `--version` output.
+///
+/// Handles formats like `"nix (Nix) 2.24.12"`.
+fn parse_version_string(output: &str) -> Option<semver::Version> {
+    let version_str = output.trim().rsplit(' ').next()?;
     semver::Version::parse(version_str).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_version_string_standard() {
+        let v = parse_version_string("nix (Nix) 2.24.12").unwrap();
+        assert_eq!(v.major, 2);
+        assert_eq!(v.minor, 24);
+        assert_eq!(v.patch, 12);
+    }
+
+    #[test]
+    fn parse_version_string_with_trailing_newline() {
+        let v = parse_version_string("nix (Nix) 2.18.0\n").unwrap();
+        assert_eq!(v, semver::Version::new(2, 18, 0));
+    }
+
+    #[test]
+    fn parse_version_string_empty() {
+        assert!(parse_version_string("").is_none());
+    }
+
+    #[test]
+    fn parse_version_string_garbage() {
+        assert!(parse_version_string("not a version").is_none());
+    }
+
+    #[test]
+    fn detect_returns_status() {
+        let status = detect();
+        // We can't assert installed/not-installed since CI may not have Nix,
+        // but we can verify the struct is well-formed.
+        if status.installed {
+            assert!(status.nix_path.is_some());
+        } else {
+            assert!(status.version.is_none());
+        }
+    }
+
+    #[test]
+    fn nix_status_serializes() {
+        let status = NixStatus {
+            installed: true,
+            version: Some(semver::Version::new(2, 24, 0)),
+            nix_path: Some(PathBuf::from("/nix/store/bin/nix")),
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(json.contains("\"installed\":true"));
+        assert!(json.contains("2.24.0"));
+    }
+
+    #[test]
+    fn nix_status_uninstalled_serializes() {
+        let status = NixStatus {
+            installed: false,
+            version: None,
+            nix_path: None,
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(json.contains("\"installed\":false"));
+    }
 }

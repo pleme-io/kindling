@@ -141,3 +141,77 @@ impl KindlingClient {
             .with_context(|| format!("parsing response from {}", url))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::NodeTarget;
+
+    #[test]
+    fn new_strips_trailing_slash() {
+        let client = KindlingClient::new("http://example.com:9100/").unwrap();
+        assert_eq!(client.base_url, "http://example.com:9100");
+    }
+
+    #[test]
+    fn new_preserves_url_without_trailing_slash() {
+        let client = KindlingClient::new("http://example.com:9100").unwrap();
+        assert_eq!(client.base_url, "http://example.com:9100");
+    }
+
+    #[test]
+    fn from_node_none_uses_default() {
+        let nodes = BTreeMap::new();
+        let client = KindlingClient::from_node(None, &nodes).unwrap();
+        assert_eq!(client.base_url, DEFAULT_BASE_URL);
+    }
+
+    #[test]
+    fn from_node_found() {
+        let mut nodes = BTreeMap::new();
+        nodes.insert(
+            "prod".to_string(),
+            NodeTarget {
+                url: "https://prod.example.com:9100".to_string(),
+                description: Some("Production".to_string()),
+            },
+        );
+        let client = KindlingClient::from_node(Some("prod"), &nodes).unwrap();
+        assert_eq!(client.base_url, "https://prod.example.com:9100");
+    }
+
+    #[test]
+    fn from_node_not_found_lists_available() {
+        let mut nodes = BTreeMap::new();
+        nodes.insert(
+            "staging".to_string(),
+            NodeTarget {
+                url: "http://staging:9100".to_string(),
+                description: None,
+            },
+        );
+        nodes.insert(
+            "prod".to_string(),
+            NodeTarget {
+                url: "http://prod:9100".to_string(),
+                description: None,
+            },
+        );
+        let result = KindlingClient::from_node(Some("dev"), &nodes);
+        assert!(result.is_err());
+        let msg = result.err().unwrap().to_string();
+        assert!(msg.contains("dev"));
+        assert!(msg.contains("not found"));
+        assert!(msg.contains("prod"));
+        assert!(msg.contains("staging"));
+    }
+
+    #[test]
+    fn from_node_not_found_empty_map() {
+        let nodes = BTreeMap::new();
+        let result = KindlingClient::from_node(Some("ghost"), &nodes);
+        assert!(result.is_err());
+        let msg = result.err().unwrap().to_string();
+        assert!(msg.contains("none configured"));
+    }
+}

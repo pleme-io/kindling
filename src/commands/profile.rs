@@ -62,12 +62,13 @@ pub fn list() -> Result<()> {
     Ok(())
 }
 
-pub fn show(name: &str) -> Result<()> {
-    let profile = PROFILES
-        .iter()
-        .find(|p| p.name == name);
+/// Look up a profile by name from the built-in registry.
+fn find_profile(name: &str) -> Option<&'static ProfileInfo> {
+    PROFILES.iter().find(|p| p.name == name)
+}
 
-    match profile {
+pub fn show(name: &str) -> Result<()> {
+    match find_profile(name) {
         Some(p) => {
             println!("{} {}", "Profile:".bold(), p.name.green().bold());
             println!("{} {}", "Platform:".bold(), p.platform);
@@ -96,4 +97,71 @@ pub fn show(name: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profiles_list_is_not_empty() {
+        assert!(!PROFILES.is_empty());
+    }
+
+    #[test]
+    fn all_profiles_have_components() {
+        for p in PROFILES {
+            assert!(
+                !p.components.is_empty(),
+                "profile '{}' should have at least one component",
+                p.name
+            );
+        }
+    }
+
+    #[test]
+    fn all_profiles_have_valid_platform() {
+        for p in PROFILES {
+            assert!(
+                p.platform == "darwin" || p.platform == "linux",
+                "profile '{}' has unexpected platform '{}'",
+                p.name,
+                p.platform
+            );
+        }
+    }
+
+    #[test]
+    fn find_profile_known() {
+        let p = find_profile("macos-developer");
+        assert!(p.is_some());
+        let p = p.unwrap();
+        assert_eq!(p.platform, "darwin");
+        assert!(p.components.contains(&"blackmatter-shell"));
+    }
+
+    #[test]
+    fn find_profile_k3s_server() {
+        let p = find_profile("k3s-server").unwrap();
+        assert_eq!(p.platform, "linux");
+        assert!(p.components.contains(&"k3s"));
+        assert!(p.components.contains(&"fluxcd"));
+    }
+
+    #[test]
+    fn find_profile_unknown() {
+        assert!(find_profile("nonexistent-profile").is_none());
+    }
+
+    #[test]
+    fn profile_names_are_unique() {
+        let mut names: Vec<&str> = PROFILES.iter().map(|p| p.name).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            PROFILES.len(),
+            "profile names should be unique"
+        );
+    }
 }

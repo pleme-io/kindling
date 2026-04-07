@@ -95,3 +95,28 @@ pub fn prepend_nix_profile_to_path() {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_known_tool() {
+        // `sh` should be available on any Unix system
+        let result = find("sh");
+        assert!(result.is_some(), "sh should be found on PATH");
+    }
+
+    #[test]
+    fn find_nonexistent_tool() {
+        let result = find("this-tool-does-not-exist-12345");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn find_returns_valid_path() {
+        if let Some(path) = find("sh") {
+            assert!(path.is_file(), "found path should be a file");
+        }
+    }
+}
