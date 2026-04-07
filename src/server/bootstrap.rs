@@ -981,46 +981,78 @@ fn get_interface_for_ip_proc(target_ip: &str) -> Result<String> {
     bail!("no interface found for {target_ip} via /proc/net/route")
 }
 
+// ── IMDSv2 client ──────────────────────────────────────────────────────
+
+/// Lightweight wrapper around EC2 IMDSv2 that acquires a session token once
+/// and reuses it for subsequent metadata lookups.
+struct ImdsClient {
+    http: reqwest::blocking::Client,
+    token: String,
+}
+
+impl ImdsClient {
+    /// Create a new IMDS client, acquiring an IMDSv2 session token.
+    fn new() -> Result<Self> {
+        let http = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .context("failed to build HTTP client for IMDS")?;
+
+        let token = http
+            .put("http://169.254.169.254/latest/api/token")
+            .header("X-aws-ec2-metadata-token-ttl-seconds", "60")
+            .send()
+            .context("IMDS token request failed")?
+            .error_for_status()
+            .context("IMDS token request returned error status")?
+            .text()
+            .context("failed to read IMDS token body")?;
+
+        let token = token.trim().to_string();
+        if token.is_empty() {
+            bail!("IMDS token is empty — not running on EC2?");
+        }
+
+        Ok(Self { http, token })
+    }
+
+    /// Fetch a metadata path (e.g. `"local-ipv4"` or `"instance-id"`).
+    fn get(&self, path: &str) -> Result<String> {
+        let url = format!("http://169.254.169.254/latest/meta-data/{path}");
+        let body = self
+            .http
+            .get(&url)
+            .header("X-aws-ec2-metadata-token", &self.token)
+            .send()
+            .with_context(|| format!("IMDS request failed for {path}"))?
+            .error_for_status()
+            .with_context(|| format!("IMDS request returned error for {path}"))?
+            .text()
+            .with_context(|| format!("failed to read IMDS body for {path}"))?;
+
+        let value = body.trim().to_string();
+        if value.is_empty() {
+            bail!("IMDS {path} is empty");
+        }
+        Ok(value)
+    }
+
+    fn private_ip(&self) -> Result<String> {
+        self.get("local-ipv4")
+    }
+
+    fn instance_id(&self) -> Result<String> {
+        self.get("instance-id")
+    }
+
+    fn region(&self) -> Result<String> {
+        self.get("placement/region")
+    }
+}
+
 /// Read the VPC private IP from EC2 instance metadata (IMDSv2).
 fn get_vpc_private_ip() -> Result<String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-        .context("failed to build HTTP client for IMDS")?;
-
-    // Get IMDSv2 token
-    let token = client
-        .put("http://169.254.169.254/latest/api/token")
-        .header("X-aws-ec2-metadata-token-ttl-seconds", "60")
-        .send()
-        .context("IMDS token request failed")?
-        .error_for_status()
-        .context("IMDS token request returned error status")?
-        .text()
-        .context("failed to read IMDS token body")?;
-
-    let token = token.trim().to_string();
-    if token.is_empty() {
-        bail!("IMDS token is empty — not running on EC2?");
-    }
-
-    // Get private IP
-    let ip = client
-        .get("http://169.254.169.254/latest/meta-data/local-ipv4")
-        .header("X-aws-ec2-metadata-token", &token)
-        .send()
-        .context("IMDS private IP request failed")?
-        .error_for_status()
-        .context("IMDS private IP request returned error status")?
-        .text()
-        .context("failed to read IMDS private IP body")?;
-
-    let ip = ip.trim().to_string();
-    if ip.is_empty() {
-        bail!("IMDS private IP is empty");
-    }
-
-    Ok(ip)
+    ImdsClient::new()?.private_ip()
 }
 
 /// Known bootstrap secret keys and their target paths + permissions.
@@ -1324,86 +1356,13 @@ fn provision_bootstrap_secrets(config: &ClusterConfig) -> Result<usize> {
 // ── EC2 tag-based state reporting (test mode only) ─────────────────────
 
 /// Fetch the EC2 instance ID from IMDS (IMDSv2).
-///
-/// Returns `Err` when not running on EC2 or IMDS is unavailable.
 fn get_instance_id() -> Result<String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-        .context("failed to build HTTP client for IMDS")?;
-
-    // IMDSv2 token
-    let token = client
-        .put("http://169.254.169.254/latest/api/token")
-        .header("X-aws-ec2-metadata-token-ttl-seconds", "60")
-        .send()
-        .context("IMDS token request failed")?
-        .error_for_status()
-        .context("IMDS token request returned error status")?
-        .text()
-        .context("failed to read IMDS token body")?;
-
-    let token = token.trim().to_string();
-    if token.is_empty() {
-        bail!("IMDS token is empty — not running on EC2?");
-    }
-
-    let id = client
-        .get("http://169.254.169.254/latest/meta-data/instance-id")
-        .header("X-aws-ec2-metadata-token", &token)
-        .send()
-        .context("IMDS instance-id request failed")?
-        .error_for_status()
-        .context("IMDS instance-id request returned error status")?
-        .text()
-        .context("failed to read IMDS instance-id body")?;
-
-    let id = id.trim().to_string();
-    if id.is_empty() {
-        bail!("IMDS instance-id is empty");
-    }
-    Ok(id)
+    ImdsClient::new()?.instance_id()
 }
 
 /// Fetch the EC2 instance region from IMDS (IMDSv2).
-///
-/// Returns `Err` when not running on EC2 or IMDS is unavailable.
 fn get_instance_region() -> Result<String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-        .context("failed to build HTTP client for IMDS")?;
-
-    let token = client
-        .put("http://169.254.169.254/latest/api/token")
-        .header("X-aws-ec2-metadata-token-ttl-seconds", "60")
-        .send()
-        .context("IMDS token request failed")?
-        .error_for_status()
-        .context("IMDS token request returned error status")?
-        .text()
-        .context("failed to read IMDS token body")?;
-
-    let token = token.trim().to_string();
-    if token.is_empty() {
-        bail!("IMDS token is empty — not running on EC2?");
-    }
-
-    let region = client
-        .get("http://169.254.169.254/latest/meta-data/placement/region")
-        .header("X-aws-ec2-metadata-token", &token)
-        .send()
-        .context("IMDS region request failed")?
-        .error_for_status()
-        .context("IMDS region request returned error status")?
-        .text()
-        .context("failed to read IMDS region body")?;
-
-    let region = region.trim().to_string();
-    if region.is_empty() {
-        bail!("IMDS region is empty");
-    }
-    Ok(region)
+    ImdsClient::new()?.region()
 }
 
 /// Tag the current EC2 instance with a key-value pair (non-fatal).
@@ -1413,12 +1372,15 @@ fn get_instance_region() -> Result<String> {
 /// silently — this is by design for production instances that may not
 /// have the tag permission.
 fn tag_instance(key: &str, value: &str) {
-    let instance_id = match get_instance_id() {
-        Ok(id) => id,
-        Err(_) => return, // Not on EC2 or IMDS unavailable
+    let imds = match ImdsClient::new() {
+        Ok(c) => c,
+        Err(_) => return,
     };
-
-    let region = get_instance_region().unwrap_or_else(|_| "us-east-1".to_string());
+    let instance_id = match imds.instance_id() {
+        Ok(id) => id,
+        Err(_) => return,
+    };
+    let region = imds.region().unwrap_or_else(|_| "us-east-1".to_string());
 
     let _ = std::process::Command::new("aws")
         .args([
