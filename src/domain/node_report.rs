@@ -318,3 +318,182 @@ pub struct CertStatus {
     #[serde(default)]
     pub issuer: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_report() -> NodeReport {
+        NodeReport {
+            timestamp: Utc::now(),
+            daemon_version: "0.3.0".to_string(),
+            hostname: "test-node".to_string(),
+            hardware: HardwareSnapshot {
+                cpu_model: "Test CPU".to_string(),
+                cpu_vendor: "Test".to_string(),
+                cpu_architecture: "x86_64".to_string(),
+                cpu_cores: 4,
+                cpu_threads: 8,
+                cpu_frequency_mhz: None,
+                cpu_cache_bytes: None,
+                ram_total_bytes: 16_000_000_000,
+                ram_available_bytes: 8_000_000_000,
+                swap_total_bytes: 0,
+                swap_used_bytes: 0,
+                disks: vec![],
+                gpus: vec![],
+                temperatures: vec![],
+                power: None,
+            },
+            os: OsSnapshot {
+                distribution: "NixOS".to_string(),
+                version: "25.11".to_string(),
+                kernel_version: "6.12.0".to_string(),
+                architecture: "x86_64".to_string(),
+                platform_triple: "x86_64-linux".to_string(),
+                hostname: "test-node".to_string(),
+                product_name: None,
+                build_id: None,
+                systemd_version: None,
+                boot_time: None,
+                uptime_secs: 3600,
+                timezone: None,
+                is_wsl: false,
+                virtualization: None,
+            },
+            network: NetworkSnapshot {
+                hostname: "test-node".to_string(),
+                interfaces: vec![],
+                routes: vec![],
+                dns_resolvers: vec![],
+                default_gateway: None,
+                listening_ports: vec![],
+            },
+            nix: NixSnapshot {
+                nix_version: "2.24.12".to_string(),
+                store_size_bytes: 10_000_000,
+                store_path_count: 500,
+                gc_roots_count: 20,
+                last_rebuild_timestamp: None,
+                current_system_path: None,
+                substituters: vec![],
+                system_generations: 5,
+                channels: vec![],
+                trusted_users: vec!["root".to_string()],
+                max_jobs: None,
+                sandbox_enabled: true,
+            },
+            kubernetes: None,
+            health: HealthMetrics {
+                load_average_1m: 0.5,
+                load_average_5m: 0.3,
+                load_average_15m: 0.2,
+                memory_usage_percent: 50.0,
+                swap_usage_percent: 0.0,
+                cpu_usage_percent: 10.0,
+                disk_usage: vec![],
+                open_file_descriptors: None,
+                max_file_descriptors: None,
+            },
+            security: SecuritySnapshot {
+                ssh_keys_deployed: vec![],
+                tls_certificates: vec![],
+                firewall_active: true,
+                firewall_rules_count: 5,
+                firewall_backend: Some("nftables".to_string()),
+                sshd_running: true,
+                root_login_allowed: false,
+                password_auth_enabled: false,
+            },
+            processes: ProcessSnapshot {
+                total_processes: 100,
+                running_processes: 5,
+                zombie_processes: 0,
+                top_cpu: vec![],
+                top_memory: vec![],
+            },
+        }
+    }
+
+    #[test]
+    fn stored_report_new_computes_checksum() {
+        let report = make_test_report();
+        let stored = StoredReport::new(report);
+        assert!(stored.checksum.starts_with("sha256:"));
+        assert!(stored.checksum.len() > 10);
+    }
+
+    #[test]
+    fn stored_report_verify_passes_on_fresh_report() {
+        let report = make_test_report();
+        let stored = StoredReport::new(report);
+        assert!(stored.verify(), "freshly created report should verify");
+    }
+
+    #[test]
+    fn stored_report_verify_fails_on_tampered_report() {
+        let report = make_test_report();
+        let mut stored = StoredReport::new(report);
+        stored.report.hostname = "tampered".to_string();
+        assert!(!stored.verify(), "tampered report should fail verification");
+    }
+
+    #[test]
+    fn stored_report_verify_fails_on_wrong_checksum() {
+        let report = make_test_report();
+        let mut stored = StoredReport::new(report);
+        stored.checksum = "sha256:0000000000000000".to_string();
+        assert!(!stored.verify(), "wrong checksum should fail verification");
+    }
+
+    #[test]
+    fn stored_report_age_is_non_negative() {
+        let report = make_test_report();
+        let stored = StoredReport::new(report);
+        assert!(stored.age_secs() >= 0);
+    }
+
+    #[test]
+    fn stored_report_is_stale_false_when_fresh() {
+        let report = make_test_report();
+        let stored = StoredReport::new(report);
+        assert!(!stored.is_stale(600));
+    }
+
+    #[test]
+    fn stored_report_is_stale_boundary() {
+        let report = make_test_report();
+        let mut stored = StoredReport::new(report);
+        stored.collected_at = Utc::now() - chrono::Duration::seconds(10);
+        assert!(stored.is_stale(5), "10s old report should be stale with max_age=5");
+        assert!(!stored.is_stale(3600), "10s old report should not be stale with max_age=3600");
+    }
+
+    #[test]
+    fn stored_report_serialization_round_trip() {
+        let report = make_test_report();
+        let stored = StoredReport::new(report);
+        let json = serde_json::to_string(&stored).unwrap();
+        let deserialized: StoredReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.checksum, stored.checksum);
+        assert_eq!(deserialized.report.hostname, stored.report.hostname);
+        assert!(deserialized.verify());
+    }
+
+    #[test]
+    fn stored_report_collector_version() {
+        let report = make_test_report();
+        let stored = StoredReport::new(report);
+        assert_eq!(stored.collector_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn two_different_reports_have_different_checksums() {
+        let r1 = make_test_report();
+        let mut r2 = make_test_report();
+        r2.hostname = "other-node".to_string();
+        let s1 = StoredReport::new(r1);
+        let s2 = StoredReport::new(r2);
+        assert_ne!(s1.checksum, s2.checksum);
+    }
+}
