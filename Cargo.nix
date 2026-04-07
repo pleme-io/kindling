@@ -5426,6 +5426,10 @@ rec {
             packageId = "sha2";
           }
           {
+            name = "thiserror";
+            packageId = "thiserror";
+          }
+          {
             name = "tokio";
             packageId = "tokio";
             features = [ "full" ];
