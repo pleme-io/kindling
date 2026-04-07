@@ -241,25 +241,33 @@ pub fn check_wireguard_health() -> Result<WireguardHealthStatus> {
 /// Format: `<interface>\t<peer-public-key>\t<unix-timestamp>`
 /// Timestamp of 0 means no handshake has occurred.
 fn parse_wg_handshakes(output: &str) -> (std::collections::HashSet<String>, u32) {
-    let mut interfaces = std::collections::HashSet::new();
-    let mut peers_with_handshake: u32 = 0;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
 
-    for line in output.lines() {
-        let parts: Vec<&str> = line.split('\t').collect();
-        if parts.len() >= 3 {
-            interfaces.insert(parts[0].to_string());
-            if let Ok(timestamp) = parts[2].trim().parse::<u64>() {
-                // Handshake within last 2 minutes is considered recent
-                if timestamp > 0 && (now - timestamp) < 120 {
-                    peers_with_handshake += 1;
-                }
-            }
-        }
-    }
+    // Parse lines into (interface, optional timestamp) tuples.
+    // Lines with unparseable timestamps still contribute to the interface set.
+    let parsed_lines: Vec<(&str, Option<u64>)> = output
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\t');
+            let iface = parts.next()?;
+            let _peer = parts.next()?;
+            let ts_str = parts.next()?;
+            Some((iface, ts_str.trim().parse::<u64>().ok()))
+        })
+        .collect();
+
+    let interfaces = parsed_lines
+        .iter()
+        .map(|(iface, _)| (*iface).to_string())
+        .collect();
+
+    let peers_with_handshake = parsed_lines
+        .iter()
+        .filter(|(_, ts)| ts.is_some_and(|t| t > 0 && (now - t) < 120))
+        .count() as u32;
 
     (interfaces, peers_with_handshake)
 }
