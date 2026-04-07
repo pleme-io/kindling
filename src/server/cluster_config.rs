@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::node_identity::{
@@ -64,7 +64,7 @@ pub struct ClusterConfig {
     /// Keys: "sops_age_key", "flux_github_token", etc.
     /// Values: the raw secret content (not paths).
     #[serde(default)]
-    pub bootstrap_secrets: Option<HashMap<String, String>>,
+    pub bootstrap_secrets: Option<BTreeMap<String, String>>,
 
     /// Skip nixos-rebuild during bootstrap (for AMI integration testing).
     /// When true, the bootstrap provisions secrets, starts WireGuard, and

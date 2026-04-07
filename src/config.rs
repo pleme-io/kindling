@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -14,7 +14,7 @@ pub struct Config {
     pub identity: IdentityConfig,
     pub daemon: Option<DaemonConfig>,
     #[serde(default)]
-    pub nodes: HashMap<String, NodeTarget>,
+    pub nodes: BTreeMap<String, NodeTarget>,
 }
 
 /// A named remote node target for `kindling query --node <name>`.

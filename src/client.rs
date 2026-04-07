@@ -1,6 +1,6 @@
 //! Typed HTTP client for the kindling daemon REST API.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
 use reqwest::Client;
@@ -36,7 +36,7 @@ impl KindlingClient {
     /// `None` name → localhost default. `Some(name)` → look up in nodes map.
     pub fn from_node(
         name: Option<&str>,
-        nodes: &HashMap<String, NodeTarget>,
+        nodes: &BTreeMap<String, NodeTarget>,
     ) -> Result<Self> {
         match name {
             None => Self::new(DEFAULT_BASE_URL),
