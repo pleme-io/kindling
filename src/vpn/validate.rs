@@ -25,6 +25,88 @@
 use anyhow::{bail, Result};
 use std::path::Path;
 
+/// Typed violations detected during VPN security validation.
+#[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
+pub enum VpnViolation {
+    #[error("{ctx}: name must not be empty")]
+    EmptyName { ctx: String },
+    #[error("{ctx}: name exceeds 15 chars (Linux interface name limit)")]
+    NameTooLong { ctx: String },
+    #[error("{ctx}: name contains invalid characters (only alphanumeric and dash allowed)")]
+    NameInvalidChars { ctx: String },
+    #[error("{ctx}: private_key_file is required (no cleartext keys)")]
+    MissingPrivateKeyFile { ctx: String },
+    #[error("{ctx}: address is required (interface must be bound)")]
+    MissingAddress { ctx: String },
+    #[error("{ctx}: address '{addr}' is not a valid CIDR (expected format: IP/prefix)")]
+    InvalidAddressCidr { ctx: String, addr: String },
+    #[error("{ctx}: at least one peer is required")]
+    NoPeers { ctx: String },
+    #[error("{ctx}: unknown profile '{profile}' (valid: {valid:?})")]
+    UnknownProfile { ctx: String, profile: String, valid: &'static [&'static str] },
+    #[error("{ctx}: firewall config is required (explicit firewall rules mandatory)")]
+    MissingFirewall { ctx: String },
+    #[error("{ctx}: trust_interface must be false for k8s profiles (defense in depth)")]
+    TrustInterfaceK8s { ctx: String },
+    #[error("{ctx}: k8s profile requires explicit port allowlist in firewall")]
+    NoPortAllowlistK8s { ctx: String },
+    #[error("{ctx}: listen_port {port} set but firewall.incoming_udp_port not set")]
+    ListenPortNoFirewall { ctx: String, port: u32 },
+    #[error("{ctx}: listen_port {port} is outside valid range (must be 0 for random, or 1024-65535)")]
+    ListenPortRange { ctx: String, port: u32 },
+    #[error("{ctx}: persistent_keepalive {value} exceeds maximum (0-65535)")]
+    KeepaliveRange { ctx: String, value: u32 },
+    #[error("{ctx}: public_key is required")]
+    MissingPublicKey { ctx: String },
+    #[error("{ctx}: allowed_ips must not be empty (routes must be explicit)")]
+    EmptyAllowedIps { ctx: String },
+    #[error("{ctx}: allowed_ips contains '{cidr}' (full tunnel forbidden)")]
+    FullTunnel { ctx: String, cidr: String },
+    #[error("{ctx}: allowed_ips entry '{cidr}' is not a valid CIDR")]
+    InvalidAllowedIpCidr { ctx: String, cidr: String },
+    #[error("{ctx}: endpoint '{endpoint}' is not valid (expected host:port with port 1-65535)")]
+    InvalidEndpoint { ctx: String, endpoint: String },
+    #[error("{ctx}: preshared_key_file is required (post-quantum resistance mandatory)")]
+    MissingPresharedKeyFile { ctx: String },
+    #[error("{ctx}: {field} '{path}' does not exist on disk")]
+    KeyFileNotFound { ctx: String, field: String, path: String },
+    #[error("{ctx}: {field} '{path}' has insecure permissions {mode:o}")]
+    KeyFileInsecure { ctx: String, field: String, path: String, mode: u32 },
+    #[error("vpn: duplicate link name '{name}'")]
+    DuplicateLinkName { name: String },
+    #[error("vpn: duplicate listen_port {port} (link '{name}')")]
+    DuplicateListenPort { port: u32, name: String },
+    #[error("vpn: duplicate address '{addr}' (link '{name}')")]
+    DuplicateAddress { addr: String, name: String },
+    #[error("vpn.links ({name}).peers: duplicate public_key '{key}'")]
+    DuplicatePublicKey { name: String, key: String },
+}
+
+/// Aggregate error collecting multiple VPN security violations.
+#[derive(Debug, thiserror::Error)]
+#[error("VPN security validation failed — node will NOT bootstrap.\n{count} violation(s) detected:\n  - {details}",
+    count = self.violations.len(),
+    details = self.violations.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("\n  - ")
+)]
+pub struct VpnValidationError {
+    pub violations: Vec<VpnViolation>,
+}
+
+impl VpnValidationError {
+    /// Number of violations.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.violations.len()
+    }
+
+    /// Whether the violation list is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.violations.is_empty()
+    }
+}
+
 /// Known VPN profiles and their allowed firewall configurations.
 ///
 /// CANONICAL SOURCE: blackmatter-vpn lib/profiles.nix
@@ -149,283 +231,250 @@ pub fn validate_key_file(errors: &mut Vec<String>, ctx: &str, field: &str, path:
 /// Core VPN validation logic shared between bootstrap and CLI.
 ///
 /// `check_files`: when true, also verify key files exist on disk with correct permissions.
+///
+/// Collects typed [`VpnViolation`] values internally. On failure, returns a
+/// [`VpnValidationError`] wrapped in `anyhow::Error` for backward compatibility.
 pub fn validate_vpn_links(links: &[VpnLink<'_>], check_files: bool) -> Result<()> {
     if links.is_empty() {
         return Ok(());
     }
 
-    let mut errors: Vec<String> = Vec::new();
+    let violations = collect_violations(links, check_files);
+
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(VpnValidationError { violations }.into())
+    }
+}
+
+/// Collect all VPN security violations without short-circuiting.
+fn collect_violations(links: &[VpnLink<'_>], check_files: bool) -> Vec<VpnViolation> {
+    let mut v: Vec<VpnViolation> = Vec::new();
 
     for (i, link) in links.iter().enumerate() {
         let ctx = format!("vpn.links[{}] ({})", i, link.name);
+        validate_link(&mut v, &ctx, link, check_files);
+    }
 
-        // 12. Interface name validation
-        if link.name.is_empty() {
-            errors.push(format!("{}: name must not be empty", ctx));
-        } else if link.name.len() > 15 {
-            errors.push(format!(
-                "{}: name exceeds 15 chars (Linux interface name limit)",
-                ctx
-            ));
-        } else if !link.name.chars().all(|c| c.is_alphanumeric() || c == '-') {
-            errors.push(format!(
-                "{}: name contains invalid characters (only alphanumeric and dash allowed)",
-                ctx
-            ));
+    collect_cross_link_violations(&mut v, links);
+
+    v
+}
+
+/// Validate a single VPN link.
+fn validate_link(v: &mut Vec<VpnViolation>, ctx: &str, link: &VpnLink<'_>, check_files: bool) {
+    // 12. Interface name validation
+    if link.name.is_empty() {
+        v.push(VpnViolation::EmptyName { ctx: ctx.to_string() });
+    } else if link.name.len() > 15 {
+        v.push(VpnViolation::NameTooLong { ctx: ctx.to_string() });
+    } else if !link.name.chars().all(|c| c.is_alphanumeric() || c == '-') {
+        v.push(VpnViolation::NameInvalidChars { ctx: ctx.to_string() });
+    }
+
+    // 1. Private key file mandatory
+    if link.private_key_file.is_none() {
+        v.push(VpnViolation::MissingPrivateKeyFile { ctx: ctx.to_string() });
+    }
+
+    // 2. Address mandatory
+    if link.address.is_none() {
+        v.push(VpnViolation::MissingAddress { ctx: ctx.to_string() });
+    }
+
+    // Address CIDR syntax validation
+    if let Some(addr) = link.address {
+        if !validate_cidr(addr) {
+            v.push(VpnViolation::InvalidAddressCidr { ctx: ctx.to_string(), addr: addr.to_string() });
         }
+    }
 
-        // 1. Private key file mandatory
-        if link.private_key_file.is_none() {
-            errors.push(format!(
-                "{}: private_key_file is required (no cleartext keys)",
-                ctx
-            ));
+    // 3. At least one peer
+    if link.peers.is_empty() {
+        v.push(VpnViolation::NoPeers { ctx: ctx.to_string() });
+    }
+
+    // 13. Profile validation
+    if let Some(profile) = link.profile {
+        if !VALID_VPN_PROFILES.contains(&profile) {
+            v.push(VpnViolation::UnknownProfile {
+                ctx: ctx.to_string(),
+                profile: profile.to_string(),
+                valid: VALID_VPN_PROFILES,
+            });
         }
+    }
 
-        // 2. Address mandatory
-        if link.address.is_none() {
-            errors.push(format!(
-                "{}: address is required (interface must be bound)",
-                ctx
-            ));
+    // 9. Firewall mandatory
+    let firewall = match &link.firewall {
+        Some(fw) => Some(fw),
+        None => {
+            v.push(VpnViolation::MissingFirewall { ctx: ctx.to_string() });
+            None
         }
+    };
 
-        // Address CIDR syntax validation
-        if let Some(addr) = link.address {
-            if !validate_cidr(addr) {
-                errors.push(format!(
-                    "{}: address '{}' is not a valid CIDR (expected format: IP/prefix)",
-                    ctx, addr
-                ));
+    // 10 + 11. Profile-specific firewall enforcement
+    let is_k8s_profile = link.profile.is_some_and(|p| p.starts_with("k8s-"));
+    if is_k8s_profile {
+        if let Some(fw) = firewall {
+            if fw.trust_interface {
+                v.push(VpnViolation::TrustInterfaceK8s { ctx: ctx.to_string() });
+            }
+            if fw.allowed_tcp_ports.is_empty() && fw.allowed_udp_ports.is_empty() {
+                v.push(VpnViolation::NoPortAllowlistK8s { ctx: ctx.to_string() });
             }
         }
+    }
 
-        // 3. At least one peer
-        if link.peers.is_empty() {
-            errors.push(format!("{}: at least one peer is required", ctx));
-        }
-
-        // 13. Profile validation
-        if let Some(profile) = link.profile {
-            if !VALID_VPN_PROFILES.contains(&profile) {
-                errors.push(format!(
-                    "{}: unknown profile '{}' (valid: {:?})",
-                    ctx, profile, VALID_VPN_PROFILES
-                ));
-            }
-        }
-
-        // 9. Firewall mandatory
-        let firewall = match &link.firewall {
-            Some(fw) => Some(fw),
-            None => {
-                errors.push(format!(
-                    "{}: firewall config is required (explicit firewall rules mandatory)",
-                    ctx
-                ));
-                None
-            }
-        };
-
-        // 10 + 11. Profile-specific firewall enforcement
-        let is_k8s_profile = link
-            .profile
-            .is_some_and(|p| p.starts_with("k8s-"));
-        if is_k8s_profile {
+    // 14. Server listen port firewall consistency
+    if let Some(port) = link.listen_port {
+        if port > 0 {
             if let Some(fw) = firewall {
-                if fw.trust_interface {
-                    errors.push(format!(
-                        "{}: trust_interface must be false for k8s profiles (defense in depth)",
-                        ctx
-                    ));
-                }
-                if fw.allowed_tcp_ports.is_empty() && fw.allowed_udp_ports.is_empty() {
-                    errors.push(format!(
-                        "{}: k8s profile requires explicit port allowlist in firewall",
-                        ctx
-                    ));
-                }
-            }
-        }
-
-        // 14. Server listen port firewall consistency
-        if let Some(port) = link.listen_port {
-            if port > 0 {
-                if let Some(fw) = firewall {
-                    if fw.incoming_udp_port.is_none() {
-                        errors.push(format!(
-                            "{}: listen_port {} set but firewall.incoming_udp_port not set \
-                             (firewall must explicitly allow the listen port)",
-                            ctx, port
-                        ));
-                    }
-                }
-            }
-        }
-
-        // Listen port range validation
-        if let Some(port) = link.listen_port {
-            if port != 0 && !(1024..=65535).contains(&port) {
-                errors.push(format!(
-                    "{}: listen_port {} is outside valid range (must be 0 for random, or 1024-65535)",
-                    ctx, port
-                ));
-            }
-        }
-
-        // Persistent keepalive range (link-level)
-        if let Some(ka) = link.persistent_keepalive {
-            if ka > 65535 {
-                errors.push(format!(
-                    "{}: persistent_keepalive {} exceeds maximum (0-65535)",
-                    ctx, ka
-                ));
-            }
-        }
-
-        // Per-peer validation
-        for (j, peer) in link.peers.iter().enumerate() {
-            let pctx = format!("{}.peers[{}]", ctx, j);
-
-            // 4. Public key mandatory
-            if peer.public_key.is_none() {
-                errors.push(format!("{}: public_key is required", pctx));
-            }
-
-            // 5. Allowed IPs mandatory
-            if peer.allowed_ips.is_empty() {
-                errors.push(format!(
-                    "{}: allowed_ips must not be empty (routes must be explicit)",
-                    pctx
-                ));
-            }
-
-            // 6 + 7. No full tunnel
-            for ip in peer.allowed_ips {
-                let normalized = ip.trim();
-                if normalized == "0.0.0.0/0" || normalized == "::/0" {
-                    errors.push(format!(
-                        "{}: allowed_ips contains '{}' (full tunnel forbidden — use split tunnel with scoped CIDRs)",
-                        pctx, normalized
-                    ));
-                }
-            }
-
-            // Validate CIDR syntax in allowed_ips
-            for ip in peer.allowed_ips {
-                let trimmed = ip.trim();
-                if trimmed != "0.0.0.0/0" && trimmed != "::/0" && !validate_cidr(trimmed) {
-                    errors.push(format!(
-                        "{}: allowed_ips entry '{}' is not a valid CIDR",
-                        pctx, trimmed
-                    ));
-                }
-            }
-
-            // Validate endpoint format
-            if let Some(ep) = peer.endpoint {
-                if !validate_endpoint(ep) {
-                    errors.push(format!(
-                        "{}: endpoint '{}' is not valid (expected host:port with port 1-65535)",
-                        pctx, ep
-                    ));
-                }
-            }
-
-            // Per-peer keepalive range
-            if let Some(ka) = peer.persistent_keepalive {
-                if ka > 65535 {
-                    errors.push(format!(
-                        "{}: persistent_keepalive {} exceeds maximum (0-65535)",
-                        pctx, ka
-                    ));
-                }
-            }
-
-            // 8. Pre-shared key mandatory
-            if peer.preshared_key_file.is_none() {
-                errors.push(format!(
-                    "{}: preshared_key_file is required (post-quantum resistance mandatory)",
-                    pctx
-                ));
-            }
-
-            // 15+16. PSK file checks
-            if check_files {
-                if let Some(psk_path) = peer.preshared_key_file {
-                    validate_key_file(&mut errors, &pctx, "preshared_key_file", psk_path);
-                }
-            }
-        }
-
-        // 15+16. Private key file checks
-        if check_files {
-            if let Some(key_path) = link.private_key_file {
-                validate_key_file(&mut errors, &ctx, "private_key_file", key_path);
-            }
-        }
-    }
-
-    // Cross-link collision detection
-    {
-        use std::collections::HashSet;
-
-        let mut seen_names: HashSet<&str> = HashSet::new();
-        for link in links {
-            if !seen_names.insert(link.name) {
-                errors.push(format!("vpn: duplicate link name '{}'", link.name));
-            }
-        }
-
-        let mut seen_ports: HashSet<u32> = HashSet::new();
-        for link in links {
-            if let Some(port) = link.listen_port {
-                if port > 0 && !seen_ports.insert(port) {
-                    errors.push(format!(
-                        "vpn: duplicate listen_port {} (link '{}')",
-                        port, link.name
-                    ));
-                }
-            }
-        }
-
-        let mut seen_addrs: HashSet<&str> = HashSet::new();
-        for link in links {
-            if let Some(addr) = link.address {
-                if !seen_addrs.insert(addr) {
-                    errors.push(format!(
-                        "vpn: duplicate address '{}' (link '{}')",
-                        addr, link.name
-                    ));
-                }
-            }
-        }
-
-        for link in links {
-            let mut seen_keys: HashSet<&str> = HashSet::new();
-            for peer in &link.peers {
-                if let Some(key) = peer.public_key {
-                    if !seen_keys.insert(key) {
-                        errors.push(format!(
-                            "vpn.links ({}).peers: duplicate public_key '{}'",
-                            link.name, key
-                        ));
-                    }
+                if fw.incoming_udp_port.is_none() {
+                    v.push(VpnViolation::ListenPortNoFirewall { ctx: ctx.to_string(), port });
                 }
             }
         }
     }
 
-    if errors.is_empty() {
-        Ok(())
+    // Listen port range validation
+    if let Some(port) = link.listen_port {
+        if port != 0 && (port < 1024 || port > 65535) {
+            v.push(VpnViolation::ListenPortRange { ctx: ctx.to_string(), port });
+        }
+    }
+
+    // Persistent keepalive range (link-level)
+    if let Some(ka) = link.persistent_keepalive {
+        if ka > 65535 {
+            v.push(VpnViolation::KeepaliveRange { ctx: ctx.to_string(), value: ka });
+        }
+    }
+
+    // Per-peer validation
+    for (j, peer) in link.peers.iter().enumerate() {
+        let pctx = format!("{ctx}.peers[{j}]");
+        validate_peer(v, &pctx, peer, check_files);
+    }
+
+    // 15+16. Private key file checks
+    if check_files {
+        if let Some(key_path) = link.private_key_file {
+            let mut errors = Vec::new();
+            validate_key_file(&mut errors, ctx, "private_key_file", key_path);
+            for e in errors {
+                v.push(key_file_error_to_violation(ctx, "private_key_file", key_path, &e));
+            }
+        }
+    }
+}
+
+/// Validate a single VPN peer.
+fn validate_peer(v: &mut Vec<VpnViolation>, pctx: &str, peer: &VpnPeer<'_>, check_files: bool) {
+    // 4. Public key mandatory
+    if peer.public_key.is_none() {
+        v.push(VpnViolation::MissingPublicKey { ctx: pctx.to_string() });
+    }
+
+    // 5. Allowed IPs mandatory
+    if peer.allowed_ips.is_empty() {
+        v.push(VpnViolation::EmptyAllowedIps { ctx: pctx.to_string() });
+    }
+
+    for ip in peer.allowed_ips {
+        let trimmed = ip.trim();
+        // 6 + 7. No full tunnel
+        if trimmed == "0.0.0.0/0" || trimmed == "::/0" {
+            v.push(VpnViolation::FullTunnel { ctx: pctx.to_string(), cidr: trimmed.to_string() });
+        } else if !validate_cidr(trimmed) {
+            v.push(VpnViolation::InvalidAllowedIpCidr { ctx: pctx.to_string(), cidr: trimmed.to_string() });
+        }
+    }
+
+    // Validate endpoint format
+    if let Some(ep) = peer.endpoint {
+        if !validate_endpoint(ep) {
+            v.push(VpnViolation::InvalidEndpoint { ctx: pctx.to_string(), endpoint: ep.to_string() });
+        }
+    }
+
+    // Per-peer keepalive range
+    if let Some(ka) = peer.persistent_keepalive {
+        if ka > 65535 {
+            v.push(VpnViolation::KeepaliveRange { ctx: pctx.to_string(), value: ka });
+        }
+    }
+
+    // 8. Pre-shared key mandatory
+    if peer.preshared_key_file.is_none() {
+        v.push(VpnViolation::MissingPresharedKeyFile { ctx: pctx.to_string() });
+    }
+
+    // 15+16. PSK file checks
+    if check_files {
+        if let Some(psk_path) = peer.preshared_key_file {
+            let mut errors = Vec::new();
+            validate_key_file(&mut errors, pctx, "preshared_key_file", psk_path);
+            for e in errors {
+                v.push(key_file_error_to_violation(pctx, "preshared_key_file", psk_path, &e));
+            }
+        }
+    }
+}
+
+/// Detect cross-link collisions (duplicate names, ports, addresses, peer keys).
+fn collect_cross_link_violations(v: &mut Vec<VpnViolation>, links: &[VpnLink<'_>]) {
+    use std::collections::HashSet;
+
+    let mut seen_names: HashSet<&str> = HashSet::new();
+    let mut seen_ports: HashSet<u32> = HashSet::new();
+    let mut seen_addrs: HashSet<&str> = HashSet::new();
+
+    for link in links {
+        if !seen_names.insert(link.name) {
+            v.push(VpnViolation::DuplicateLinkName { name: link.name.to_string() });
+        }
+
+        if let Some(port) = link.listen_port {
+            if port > 0 && !seen_ports.insert(port) {
+                v.push(VpnViolation::DuplicateListenPort { port, name: link.name.to_string() });
+            }
+        }
+
+        if let Some(addr) = link.address {
+            if !seen_addrs.insert(addr) {
+                v.push(VpnViolation::DuplicateAddress { addr: addr.to_string(), name: link.name.to_string() });
+            }
+        }
+
+        let mut seen_keys: HashSet<&str> = HashSet::new();
+        for peer in &link.peers {
+            if let Some(key) = peer.public_key {
+                if !seen_keys.insert(key) {
+                    v.push(VpnViolation::DuplicatePublicKey { name: link.name.to_string(), key: key.to_string() });
+                }
+            }
+        }
+    }
+}
+
+/// Convert a legacy string error from `validate_key_file` to a typed violation.
+fn key_file_error_to_violation(ctx: &str, field: &str, path: &str, _msg: &str) -> VpnViolation {
+    if _msg.contains("does not exist") {
+        VpnViolation::KeyFileNotFound {
+            ctx: ctx.to_string(),
+            field: field.to_string(),
+            path: path.to_string(),
+        }
     } else {
-        let msg = format!(
-            "VPN security validation failed — node will NOT bootstrap.\n\
-             {} violation(s) detected:\n  - {}",
-            errors.len(),
-            errors.join("\n  - ")
-        );
-        bail!(msg)
+        VpnViolation::KeyFileInsecure {
+            ctx: ctx.to_string(),
+            field: field.to_string(),
+            path: path.to_string(),
+            mode: 0,
+        }
     }
 }
 
@@ -809,5 +858,28 @@ mod tests {
             }),
         };
         assert!(validate_vpn_links(&[link], false).is_ok());
+    }
+
+    // ── Typed violation downcast ────────────────────────────────────────────
+
+    #[test]
+    fn error_can_be_downcast_to_vpn_validation_error() {
+        let ips = valid_allowed_ips();
+        let mut link = make_valid_link(&ips);
+        link.private_key_file = None;
+        let err = validate_vpn_links(&[link], false).unwrap_err();
+        let typed = err.downcast_ref::<VpnValidationError>().expect("should downcast");
+        assert!(!typed.is_empty());
+        assert!(typed.violations.iter().any(|v| matches!(v, VpnViolation::MissingPrivateKeyFile { .. })));
+    }
+
+    #[test]
+    fn collect_violations_returns_all_errors() {
+        let ips = valid_allowed_ips();
+        let mut link = make_valid_link(&ips);
+        link.private_key_file = None;
+        link.address = None;
+        let violations = collect_violations(&[link], false);
+        assert!(violations.len() >= 2, "expected at least 2 violations, got {}", violations.len());
     }
 }
