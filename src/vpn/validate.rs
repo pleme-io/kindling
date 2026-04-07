@@ -66,6 +66,7 @@ pub struct VpnFirewall<'a> {
 }
 
 /// Validate a string is valid CIDR notation (IPv4 or IPv6).
+#[must_use]
 pub fn validate_cidr(cidr: &str) -> bool {
     let parts: Vec<&str> = cidr.splitn(2, '/').collect();
     if parts.len() != 2 {
@@ -91,6 +92,7 @@ pub fn validate_cidr(cidr: &str) -> bool {
 }
 
 /// Validate a string is a valid endpoint (host:port).
+#[must_use]
 pub fn validate_endpoint(endpoint: &str) -> bool {
     // Handle IPv6 endpoints like [::1]:51820
     if let Some(bracket_end) = endpoint.find("]:") {

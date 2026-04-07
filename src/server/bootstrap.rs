@@ -27,6 +27,7 @@ use crate::node_identity::NodeIdentity;
 /// Phases of the server bootstrap process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum BootstrapPhase {
     Pending,
     ConfigLoaded,

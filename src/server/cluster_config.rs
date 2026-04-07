@@ -260,6 +260,7 @@ impl ClusterConfig {
     /// Returns true only if force_rebuild is explicitly true, or if
     /// skip_nix_rebuild is explicitly false (backward compat).
     /// Default (both None) = no rebuild (max-baked AMI path).
+    #[must_use]
     pub fn should_rebuild(&self) -> bool {
         if self.force_rebuild == Some(true) {
             return true;
@@ -283,16 +284,19 @@ impl ClusterConfig {
     }
 
     /// Whether this config targets K3s distribution.
+    #[must_use]
     pub fn is_k3s(&self) -> bool {
         self.distribution == "k3s"
     }
 
     /// Whether this config targets upstream Kubernetes (kubeadm) distribution.
+    #[must_use]
     pub fn is_kubernetes(&self) -> bool {
         self.distribution == "kubernetes"
     }
 
     /// Derive a hostname from cluster name + role + index.
+    #[must_use]
     pub fn derive_hostname(&self) -> String {
         format!("{}-{}-{}", self.cluster_name, self.role, self.node_index)
     }
