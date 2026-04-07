@@ -184,17 +184,19 @@ async fn graphql_handler(
 
 async fn shutdown_signal() {
     let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!(error = %e, "failed to listen for Ctrl+C");
+        }
     };
 
     #[cfg(unix)]
     let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => { sig.recv().await; }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to install SIGTERM handler");
+            }
+        }
     };
 
     #[cfg(not(unix))]
