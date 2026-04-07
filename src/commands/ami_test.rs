@@ -14,12 +14,14 @@ use std::process::Command;
 use std::time::Instant;
 
 #[derive(Clone, clap::ValueEnum)]
+#[non_exhaustive]
 pub enum OutputFormat {
     Text,
     Json,
 }
 
 #[derive(Clone, clap::ValueEnum)]
+#[non_exhaustive]
 pub enum Distribution {
     K3s,
     Kubernetes,

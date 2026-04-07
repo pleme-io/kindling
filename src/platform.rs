@@ -4,18 +4,21 @@ use std::fmt;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, Serialize)]
+#[non_exhaustive]
 pub enum Os {
     MacOS,
     Linux,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
+#[non_exhaustive]
 pub enum Arch {
     X86_64,
     Aarch64,
 }
 
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub enum Backend {
     Upstream,
     Determinate,
