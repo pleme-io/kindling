@@ -632,11 +632,11 @@ impl NodeIdentity {
     /// Create a redacted copy of this identity with private fields removed.
     ///
     /// `private_fields` is a list of dot-separated paths, e.g. `["secrets.age_keys", "network.vpn"]`.
-    pub fn redact(&self, private_fields: &[String]) -> Result<Self> {
+    pub fn redact(&self, private_fields: &[impl AsRef<str>]) -> Result<Self> {
         let mut val = serde_yaml::to_value(self)
             .context("failed to serialize identity for redaction")?;
         for field_path in private_fields {
-            remove_field_path(&mut val, field_path);
+            remove_field_path(&mut val, field_path.as_ref());
         }
         let redacted: NodeIdentity = serde_yaml::from_value(val)
             .context("failed to deserialize redacted identity")?;
@@ -891,7 +891,8 @@ mod tests {
     #[test]
     fn redact_empty_fields_is_identity() {
         let id = NodeIdentity::from_bootstrap("server", "h1", "root", None);
-        let redacted = id.redact(&[]).unwrap();
+        let empty: &[String] = &[];
+        let redacted = id.redact(empty).unwrap();
         assert_eq!(redacted.hostname, id.hostname);
         assert_eq!(redacted.profile, id.profile);
     }
