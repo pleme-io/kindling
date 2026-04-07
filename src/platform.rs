@@ -50,6 +50,26 @@ pub struct Platform {
 }
 
 impl Platform {
+    /// Detect the current host platform.
+    pub fn detect() -> Result<Self> {
+        let os = match std::env::consts::OS {
+            "macos" => Os::MacOS,
+            "linux" => Os::Linux,
+            other => bail!("unsupported OS: {}", other),
+        };
+
+        let arch = match std::env::consts::ARCH {
+            "x86_64" => Arch::X86_64,
+            "aarch64" => Arch::Aarch64,
+            other => bail!("unsupported architecture: {}", other),
+        };
+
+        let is_wsl = matches!(os, Os::Linux) && detect_wsl();
+
+        Ok(Self { os, arch, is_wsl })
+    }
+
+    #[must_use]
     pub fn target_triple(&self) -> &'static str {
         match (&self.os, &self.arch) {
             (Os::MacOS, Arch::X86_64) => "x86_64-darwin",
@@ -60,22 +80,11 @@ impl Platform {
     }
 }
 
+/// Detect the current host platform.
+///
+/// Delegates to [`Platform::detect`]. Kept for backward compatibility.
 pub fn detect() -> Result<Platform> {
-    let os = match std::env::consts::OS {
-        "macos" => Os::MacOS,
-        "linux" => Os::Linux,
-        other => bail!("unsupported OS: {}", other),
-    };
-
-    let arch = match std::env::consts::ARCH {
-        "x86_64" => Arch::X86_64,
-        "aarch64" => Arch::Aarch64,
-        other => bail!("unsupported architecture: {}", other),
-    };
-
-    let is_wsl = matches!(os, Os::Linux) && detect_wsl();
-
-    Ok(Platform { os, arch, is_wsl })
+    Platform::detect()
 }
 
 fn detect_wsl() -> bool {
