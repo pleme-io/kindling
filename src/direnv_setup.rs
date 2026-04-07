@@ -127,3 +127,27 @@ fn direnv_lib_dir() -> Result<PathBuf> {
     let config_dir = dirs::config_dir().context("could not determine config directory")?;
     Ok(config_dir.join("direnv").join("lib"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_rc_returns_path_and_hook() {
+        let (path, hook) = shell_rc_and_hook().unwrap();
+        assert!(!path.as_os_str().is_empty());
+        assert!(hook.contains("direnv hook"));
+    }
+
+    #[test]
+    fn direnv_lib_dir_is_under_config() {
+        let dir = direnv_lib_dir().unwrap();
+        assert!(dir.to_string_lossy().contains("direnv"));
+        assert!(dir.to_string_lossy().contains("lib"));
+    }
+
+    #[test]
+    fn use_kindling_sh_is_not_empty() {
+        assert!(!USE_KINDLING_SH.is_empty());
+    }
+}

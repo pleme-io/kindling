@@ -28,3 +28,20 @@ impl VectorClient {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_stores_url() {
+        let client = VectorClient::new("http://localhost:8686");
+        assert_eq!(client.url, "http://localhost:8686");
+    }
+
+    #[test]
+    fn new_preserves_url_with_path() {
+        let client = VectorClient::new("http://vector.svc:8686/api/v1/events");
+        assert_eq!(client.url, "http://vector.svc:8686/api/v1/events");
+    }
+}
