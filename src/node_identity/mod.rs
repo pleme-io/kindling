@@ -703,3 +703,277 @@ impl NodeIdentity {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    // ── deep_merge tests ──────────────────────────────
+
+    #[test]
+    fn deep_merge_scalar_overlay_wins() {
+        let mut base = serde_yaml::from_str::<serde_yaml::Value>("name: alice").unwrap();
+        let overlay = serde_yaml::from_str::<serde_yaml::Value>("name: bob").unwrap();
+        deep_merge(&mut base, overlay);
+        assert_eq!(base["name"].as_str(), Some("bob"));
+    }
+
+    #[test]
+    fn deep_merge_null_overlay_preserves_base() {
+        let mut base = serde_yaml::from_str::<serde_yaml::Value>("name: alice").unwrap();
+        let overlay = serde_yaml::Value::Null;
+        deep_merge(&mut base, overlay);
+        assert_eq!(base["name"].as_str(), Some("alice"));
+    }
+
+    #[test]
+    fn deep_merge_nested_mappings() {
+        let mut base = serde_yaml::from_str::<serde_yaml::Value>(
+            "user:\n  name: alice\n  uid: 1000"
+        ).unwrap();
+        let overlay = serde_yaml::from_str::<serde_yaml::Value>(
+            "user:\n  name: bob"
+        ).unwrap();
+        deep_merge(&mut base, overlay);
+        assert_eq!(base["user"]["name"].as_str(), Some("bob"));
+        assert_eq!(base["user"]["uid"].as_u64(), Some(1000));
+    }
+
+    #[test]
+    fn deep_merge_adds_new_keys() {
+        let mut base = serde_yaml::from_str::<serde_yaml::Value>("a: 1").unwrap();
+        let overlay = serde_yaml::from_str::<serde_yaml::Value>("b: 2").unwrap();
+        deep_merge(&mut base, overlay);
+        assert_eq!(base["a"].as_u64(), Some(1));
+        assert_eq!(base["b"].as_u64(), Some(2));
+    }
+
+    #[test]
+    fn deep_merge_sequence_overlay_replaces() {
+        let mut base = serde_yaml::from_str::<serde_yaml::Value>(
+            "tags:\n  - a\n  - b"
+        ).unwrap();
+        let overlay = serde_yaml::from_str::<serde_yaml::Value>(
+            "tags:\n  - x"
+        ).unwrap();
+        deep_merge(&mut base, overlay);
+        let tags = base["tags"].as_sequence().unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].as_str(), Some("x"));
+    }
+
+    // ── remove_field_path tests ──────────────────────────────
+
+    #[test]
+    fn remove_field_path_single_level() {
+        let mut val = serde_yaml::from_str::<serde_yaml::Value>(
+            "name: alice\nage: 30"
+        ).unwrap();
+        remove_field_path(&mut val, "age");
+        assert!(val["age"].is_null());
+        assert_eq!(val["name"].as_str(), Some("alice"));
+    }
+
+    #[test]
+    fn remove_field_path_nested() {
+        let mut val = serde_yaml::from_str::<serde_yaml::Value>(
+            "secrets:\n  age_keys:\n    - key1\n  provider: sops"
+        ).unwrap();
+        remove_field_path(&mut val, "secrets.age_keys");
+        assert!(val["secrets"]["age_keys"].is_null());
+        assert_eq!(val["secrets"]["provider"].as_str(), Some("sops"));
+    }
+
+    #[test]
+    fn remove_field_path_nonexistent_is_noop() {
+        let mut val = serde_yaml::from_str::<serde_yaml::Value>("name: alice").unwrap();
+        let original = val.clone();
+        remove_field_path(&mut val, "nonexistent.deep.path");
+        assert_eq!(val, original);
+    }
+
+    #[test]
+    fn remove_field_path_empty_path_is_noop() {
+        let mut val = serde_yaml::from_str::<serde_yaml::Value>("name: alice").unwrap();
+        let original = val.clone();
+        remove_field_path(&mut val, "");
+        assert_eq!(val, original);
+    }
+
+    // ── from_bootstrap tests ──────────────────────────────
+
+    #[test]
+    fn from_bootstrap_sets_fields() {
+        let id = NodeIdentity::from_bootstrap("cloud-server", "node1", "deploy", None);
+        assert_eq!(id.profile, "cloud-server");
+        assert_eq!(id.hostname, "node1");
+        assert_eq!(id.user.name, "deploy");
+        assert_eq!(id.user.uid, 1000);
+        assert_eq!(id.version, "1");
+        assert!(id.secrets.age_key_file.is_none());
+    }
+
+    #[test]
+    fn from_bootstrap_with_age_key() {
+        let id = NodeIdentity::from_bootstrap("server", "h1", "root", Some("/etc/age.key"));
+        assert_eq!(id.secrets.age_key_file.as_deref(), Some("/etc/age.key"));
+    }
+
+    #[test]
+    fn from_bootstrap_includes_user_in_trusted_users() {
+        let id = NodeIdentity::from_bootstrap("server", "h1", "deploy", None);
+        assert!(id.nix.trusted_users.contains(&"root".to_string()));
+        assert!(id.nix.trusted_users.contains(&"deploy".to_string()));
+    }
+
+    // ── save + load round-trip tests ──────────────────────────────
+
+    #[test]
+    fn save_and_load_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node.yaml");
+        let original = NodeIdentity::from_bootstrap("cloud-server", "test-node", "root", None);
+        original.save(&path).unwrap();
+        let loaded = NodeIdentity::load(&path).unwrap();
+        assert_eq!(loaded.hostname, "test-node");
+        assert_eq!(loaded.profile, "cloud-server");
+        assert_eq!(loaded.user.name, "root");
+    }
+
+    #[test]
+    fn save_creates_parent_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a").join("b").join("node.yaml");
+        let id = NodeIdentity::from_bootstrap("server", "h1", "root", None);
+        id.save(&path).unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn load_nonexistent_returns_error() {
+        let result = NodeIdentity::load(Path::new("/nonexistent/path/node.yaml"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_invalid_yaml_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.yaml");
+        std::fs::write(&path, "not: [valid: yaml: {{{{").unwrap();
+        let result = NodeIdentity::load(&path);
+        assert!(result.is_err());
+    }
+
+    // ── to_json tests ──────────────────────────────
+
+    #[test]
+    fn to_json_produces_valid_json() {
+        let id = NodeIdentity::from_bootstrap("server", "host1", "root", None);
+        let json = id.to_json().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["hostname"], "host1");
+        assert_eq!(parsed["profile"], "server");
+    }
+
+    // ── redact tests ──────────────────────────────
+
+    #[test]
+    fn redact_removes_specified_fields() {
+        let mut id = NodeIdentity::from_bootstrap("server", "h1", "root", Some("/key"));
+        id.secrets.age_keys = vec!["AGE-SECRET-KEY-1FAKE".to_string()];
+        let redacted = id.redact(&["secrets.age_keys".to_string(), "secrets.age_key_file".to_string()]).unwrap();
+        assert!(redacted.secrets.age_keys.is_empty());
+        assert!(redacted.secrets.age_key_file.is_none());
+        assert_eq!(redacted.hostname, "h1");
+    }
+
+    #[test]
+    fn redact_empty_fields_is_identity() {
+        let id = NodeIdentity::from_bootstrap("server", "h1", "root", None);
+        let redacted = id.redact(&[]).unwrap();
+        assert_eq!(redacted.hostname, id.hostname);
+        assert_eq!(redacted.profile, id.profile);
+    }
+
+    // ── load_with_overlays tests ──────────────────────────────
+
+    #[test]
+    fn load_with_overlays_applies_overlay() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let base_path = dir.path().join("node.yaml");
+        std::fs::write(&base_path, "version: '1'\nprofile: base\nhostname: original\nuser:\n  name: root\n  uid: 0\n  shell: bash\n  email: ''").unwrap();
+
+        let overlay_dir = dir.path().join("overlays");
+        std::fs::create_dir_all(&overlay_dir).unwrap();
+        std::fs::write(overlay_dir.join("01-override.yaml"), "hostname: overridden").unwrap();
+
+        let identity = NodeIdentity::load_with_overlays(
+            &base_path,
+            &[overlay_dir.to_string_lossy().to_string()],
+        ).unwrap();
+
+        assert_eq!(identity.hostname, "overridden");
+        assert_eq!(identity.profile, "base");
+    }
+
+    #[test]
+    fn load_with_overlays_sorts_alphabetically() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let base_path = dir.path().join("node.yaml");
+        std::fs::write(&base_path, "version: '1'\nprofile: base\nhostname: h\nuser:\n  name: root\n  uid: 0\n  shell: bash\n  email: ''").unwrap();
+
+        let overlay_dir = dir.path().join("overlays");
+        std::fs::create_dir_all(&overlay_dir).unwrap();
+        std::fs::write(overlay_dir.join("02-second.yaml"), "hostname: second").unwrap();
+        std::fs::write(overlay_dir.join("01-first.yaml"), "hostname: first").unwrap();
+
+        let identity = NodeIdentity::load_with_overlays(
+            &base_path,
+            &[overlay_dir.to_string_lossy().to_string()],
+        ).unwrap();
+
+        assert_eq!(identity.hostname, "second");
+    }
+
+    #[test]
+    fn load_with_overlays_skips_bad_files() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let base_path = dir.path().join("node.yaml");
+        std::fs::write(&base_path, "version: '1'\nprofile: base\nhostname: h\nuser:\n  name: root\n  uid: 0\n  shell: bash\n  email: ''").unwrap();
+
+        let overlay_dir = dir.path().join("overlays");
+        std::fs::create_dir_all(&overlay_dir).unwrap();
+        std::fs::write(overlay_dir.join("01-bad.yaml"), "{{invalid yaml}}}").unwrap();
+        std::fs::write(overlay_dir.join("02-good.yaml"), "hostname: good").unwrap();
+
+        let identity = NodeIdentity::load_with_overlays(
+            &base_path,
+            &[overlay_dir.to_string_lossy().to_string()],
+        ).unwrap();
+
+        assert_eq!(identity.hostname, "good");
+    }
+
+    #[test]
+    fn load_with_overlays_ignores_non_yaml_files() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let base_path = dir.path().join("node.yaml");
+        std::fs::write(&base_path, "version: '1'\nprofile: base\nhostname: original\nuser:\n  name: root\n  uid: 0\n  shell: bash\n  email: ''").unwrap();
+
+        let overlay_dir = dir.path().join("overlays");
+        std::fs::create_dir_all(&overlay_dir).unwrap();
+        std::fs::write(overlay_dir.join("readme.txt"), "hostname: should-be-ignored").unwrap();
+
+        let identity = NodeIdentity::load_with_overlays(
+            &base_path,
+            &[overlay_dir.to_string_lossy().to_string()],
+        ).unwrap();
+
+        assert_eq!(identity.hostname, "original");
+    }
+}

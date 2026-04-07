@@ -176,3 +176,96 @@ fn generate_nixos_flake(identity: &NodeIdentity) -> String {
         profile = identity.profile,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node_identity::NodeIdentity;
+
+    fn test_identity(profile: &str, hostname: &str) -> NodeIdentity {
+        NodeIdentity::from_bootstrap(profile, hostname, "root", None)
+    }
+
+    #[test]
+    fn is_darwin_profile_matches_macos_developer() {
+        assert!(is_darwin_profile("macos-developer"));
+    }
+
+    #[test]
+    fn is_darwin_profile_rejects_non_darwin() {
+        assert!(!is_darwin_profile("cloud-server"));
+        assert!(!is_darwin_profile("k8s-cloud-server"));
+        assert!(!is_darwin_profile(""));
+    }
+
+    #[test]
+    fn nixos_flake_contains_hostname() {
+        let id = test_identity("cloud-server", "my-node");
+        let content = generate_flake_content(&id);
+        assert!(content.contains("my-node"), "flake should reference hostname");
+    }
+
+    #[test]
+    fn nixos_flake_contains_profile() {
+        let id = test_identity("cloud-server", "n1");
+        let content = generate_flake_content(&id);
+        assert!(content.contains("cloud-server"), "flake should reference profile");
+    }
+
+    #[test]
+    fn nixos_flake_uses_nixos_system() {
+        let id = test_identity("cloud-server", "n1");
+        let content = generate_flake_content(&id);
+        assert!(content.contains("nixosConfigurations"));
+        assert!(content.contains("nixpkgs.lib.nixosSystem"));
+        assert!(!content.contains("darwinConfigurations"));
+    }
+
+    #[test]
+    fn darwin_flake_uses_darwin_system() {
+        let id = test_identity("macos-developer", "mac1");
+        let content = generate_flake_content(&id);
+        assert!(content.contains("darwinConfigurations"));
+        assert!(content.contains("nix-darwin.lib.darwinSystem"));
+        assert!(!content.contains("nixosConfigurations"));
+    }
+
+    #[test]
+    fn darwin_flake_references_sops_nix_absent() {
+        let id = test_identity("macos-developer", "mac1");
+        let content = generate_flake_content(&id);
+        assert!(!content.contains("sops-nix"), "darwin flake should not import sops-nix");
+    }
+
+    #[test]
+    fn write_node_json_creates_valid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = test_identity("cloud-server", "json-test");
+        let path = write_node_json(&id, dir.path()).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["hostname"], "json-test");
+        assert_eq!(parsed["profile"], "cloud-server");
+    }
+
+    #[test]
+    fn write_flake_nix_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = test_identity("cloud-server", "flake-test");
+        let path = write_flake_nix(&id, dir.path()).unwrap();
+
+        assert!(path.exists());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("flake-test"));
+    }
+
+    #[test]
+    fn write_node_json_creates_parent_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a").join("b");
+        let id = test_identity("server", "h1");
+        let path = write_node_json(&id, &nested).unwrap();
+        assert!(path.exists());
+    }
+}

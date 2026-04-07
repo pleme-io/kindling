@@ -104,3 +104,126 @@ pub fn installer_url(platform: &Platform, backend: &Backend) -> String {
 pub fn has_systemd() -> bool {
     std::path::Path::new("/run/systemd/system").exists()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Backend FromStr tests ──────────────────────────────
+
+    #[test]
+    fn backend_parse_upstream() {
+        let b: Backend = "upstream".parse().unwrap();
+        assert!(matches!(b, Backend::Upstream));
+    }
+
+    #[test]
+    fn backend_parse_determinate() {
+        let b: Backend = "determinate".parse().unwrap();
+        assert!(matches!(b, Backend::Determinate));
+    }
+
+    #[test]
+    fn backend_parse_unknown_fails() {
+        let result: Result<Backend> = "nixpkgs".parse();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("unknown backend"));
+        assert!(err.contains("nixpkgs"));
+    }
+
+    #[test]
+    fn backend_parse_empty_fails() {
+        let result: Result<Backend> = "".parse();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn backend_parse_case_sensitive() {
+        let result: Result<Backend> = "Upstream".parse();
+        assert!(result.is_err(), "parsing should be case-sensitive");
+    }
+
+    // ── Backend Display tests ──────────────────────────────
+
+    #[test]
+    fn backend_display_upstream() {
+        assert_eq!(Backend::Upstream.to_string(), "upstream");
+    }
+
+    #[test]
+    fn backend_display_determinate() {
+        assert_eq!(Backend::Determinate.to_string(), "determinate");
+    }
+
+    #[test]
+    fn backend_roundtrip_display_parse() {
+        for original in [Backend::Upstream, Backend::Determinate] {
+            let s = original.to_string();
+            let parsed: Backend = s.parse().unwrap();
+            assert_eq!(parsed.to_string(), original.to_string());
+        }
+    }
+
+    // ── Platform target_triple tests ──────────────────────────────
+
+    #[test]
+    fn target_triple_linux_x86_64() {
+        let p = Platform { os: Os::Linux, arch: Arch::X86_64, is_wsl: false };
+        assert_eq!(p.target_triple(), "x86_64-linux");
+    }
+
+    #[test]
+    fn target_triple_linux_aarch64() {
+        let p = Platform { os: Os::Linux, arch: Arch::Aarch64, is_wsl: false };
+        assert_eq!(p.target_triple(), "aarch64-linux");
+    }
+
+    #[test]
+    fn target_triple_macos_x86_64() {
+        let p = Platform { os: Os::MacOS, arch: Arch::X86_64, is_wsl: false };
+        assert_eq!(p.target_triple(), "x86_64-darwin");
+    }
+
+    #[test]
+    fn target_triple_macos_aarch64() {
+        let p = Platform { os: Os::MacOS, arch: Arch::Aarch64, is_wsl: false };
+        assert_eq!(p.target_triple(), "aarch64-darwin");
+    }
+
+    // ── installer_url tests ──────────────────────────────
+
+    #[test]
+    fn installer_url_upstream_linux() {
+        let p = Platform { os: Os::Linux, arch: Arch::X86_64, is_wsl: false };
+        let url = installer_url(&p, &Backend::Upstream);
+        assert!(url.contains("NixOS/nix-installer"));
+        assert!(url.contains("x86_64-linux"));
+    }
+
+    #[test]
+    fn installer_url_determinate_macos() {
+        let p = Platform { os: Os::MacOS, arch: Arch::Aarch64, is_wsl: false };
+        let url = installer_url(&p, &Backend::Determinate);
+        assert!(url.contains("install.determinate.systems"));
+        assert!(url.contains("aarch64-darwin"));
+    }
+
+    #[test]
+    fn installer_url_uses_correct_triple() {
+        let p = Platform { os: Os::Linux, arch: Arch::Aarch64, is_wsl: false };
+        let url = installer_url(&p, &Backend::Upstream);
+        assert!(url.ends_with("aarch64-linux"));
+    }
+
+    // ── detect tests ──────────────────────────────
+
+    #[test]
+    fn detect_returns_current_platform() {
+        let p = detect().unwrap();
+        #[cfg(target_os = "linux")]
+        assert!(matches!(p.os, Os::Linux));
+        #[cfg(target_os = "macos")]
+        assert!(matches!(p.os, Os::MacOS));
+    }
+}

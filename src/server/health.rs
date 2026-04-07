@@ -363,4 +363,84 @@ mod tests {
         assert_eq!(interfaces.len(), 1);
         assert_eq!(peers, 0);
     }
+
+    #[test]
+    fn parse_wg_handshakes_empty_output() {
+        let (interfaces, peers) = parse_wg_handshakes("");
+        assert!(interfaces.is_empty());
+        assert_eq!(peers, 0);
+    }
+
+    #[test]
+    fn parse_wg_handshakes_stale_handshake() {
+        let old = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() - 300; // 5 minutes ago — beyond 2-minute window
+        let output = format!("wg0\tpeerkey1\t{}\n", old);
+        let (interfaces, peers) = parse_wg_handshakes(&output);
+        assert_eq!(interfaces.len(), 1);
+        assert_eq!(peers, 0, "handshake older than 120s should not count");
+    }
+
+    #[test]
+    fn parse_wg_handshakes_malformed_lines_ignored() {
+        let output = "wg0\tpeerkey1\n\nshort\n";
+        let (interfaces, peers) = parse_wg_handshakes(output);
+        assert!(interfaces.is_empty());
+        assert_eq!(peers, 0);
+    }
+
+    #[test]
+    fn parse_wg_handshakes_invalid_timestamp_ignored() {
+        let output = "wg0\tpeerkey1\tnot-a-number\n";
+        let (interfaces, peers) = parse_wg_handshakes(output);
+        assert_eq!(interfaces.len(), 1);
+        assert_eq!(peers, 0);
+    }
+
+    #[test]
+    fn parse_wg_handshakes_multiple_interfaces() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let output = format!(
+            "wg0\tpeerA\t{}\nwg1\tpeerB\t{}\nwg2\tpeerC\t0\n",
+            now - 10,
+            now - 50,
+        );
+        let (interfaces, peers) = parse_wg_handshakes(&output);
+        assert_eq!(interfaces.len(), 3);
+        assert_eq!(peers, 2);
+    }
+
+    #[test]
+    fn wireguard_health_status_roundtrip() {
+        let status = WireguardHealthStatus {
+            ready: false,
+            interface_count: 0,
+            peers_with_handshake: 0,
+            message: "no WireGuard interfaces found".to_string(),
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        let deserialized: WireguardHealthStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.ready, false);
+        assert_eq!(deserialized.interface_count, 0);
+        assert_eq!(deserialized.message, "no WireGuard interfaces found");
+    }
+
+    #[test]
+    fn k3s_health_status_roundtrip() {
+        let status = K3sHealthStatus {
+            ready: false,
+            node_count: 3,
+            ready_nodes: 1,
+            message: "1/3 nodes ready (waiting)".to_string(),
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        let deserialized: K3sHealthStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.node_count, 3);
+        assert_eq!(deserialized.ready_nodes, 1);
+    }
 }

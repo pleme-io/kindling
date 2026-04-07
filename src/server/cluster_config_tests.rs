@@ -799,6 +799,139 @@ fn validate_vpn_rejects_duplicate_addresses() {
     assert!(err.to_string().contains("duplicate address"));
 }
 
+// ── should_rebuild tests ──────────────────────────────
+
+#[test]
+fn should_rebuild_default_is_false() {
+    let config = ClusterConfig::from_json(MINIMAL_JSON).unwrap();
+    assert!(!config.should_rebuild(), "default (both None) should not rebuild");
+}
+
+#[test]
+fn should_rebuild_force_rebuild_true() {
+    let json = r#"{"cluster_name":"test","force_rebuild":true}"#;
+    let config = ClusterConfig::from_json(json).unwrap();
+    assert!(config.should_rebuild(), "force_rebuild=true should rebuild");
+}
+
+#[test]
+fn should_rebuild_skip_nix_rebuild_false() {
+    let json = r#"{"cluster_name":"test","skip_nix_rebuild":false}"#;
+    let config = ClusterConfig::from_json(json).unwrap();
+    assert!(config.should_rebuild(), "skip_nix_rebuild=false should rebuild");
+}
+
+#[test]
+fn should_rebuild_skip_nix_rebuild_true() {
+    let json = r#"{"cluster_name":"test","skip_nix_rebuild":true}"#;
+    let config = ClusterConfig::from_json(json).unwrap();
+    assert!(!config.should_rebuild(), "skip_nix_rebuild=true should not rebuild");
+}
+
+#[test]
+fn should_rebuild_force_overrides_skip() {
+    let json = r#"{"cluster_name":"test","force_rebuild":true,"skip_nix_rebuild":true}"#;
+    let config = ClusterConfig::from_json(json).unwrap();
+    assert!(config.should_rebuild(), "force_rebuild=true should win");
+}
+
+// ── derive_hostname edge cases ──────────────────────────────
+
+#[test]
+fn derive_hostname_with_index() {
+    let json = r#"{"cluster_name":"prod","role":"agent","node_index":5}"#;
+    let config = ClusterConfig::from_json(json).unwrap();
+    assert_eq!(config.derive_hostname(), "prod-agent-5");
+}
+
+#[test]
+fn derive_hostname_defaults() {
+    let json = r#"{"cluster_name":"test"}"#;
+    let config = ClusterConfig::from_json(json).unwrap();
+    assert_eq!(config.derive_hostname(), "test-server-0");
+}
+
+// ── distribution helper edge cases ──────────────────────────────
+
+#[test]
+fn is_k3s_with_explicit_k3s() {
+    let config = ClusterConfig::from_json(r#"{"cluster_name":"t","distribution":"k3s"}"#).unwrap();
+    assert!(config.is_k3s());
+    assert!(!config.is_kubernetes());
+}
+
+#[test]
+fn is_kubernetes_with_explicit_kubernetes() {
+    let config = ClusterConfig::from_json(r#"{"cluster_name":"t","distribution":"kubernetes"}"#).unwrap();
+    assert!(!config.is_k3s());
+    assert!(config.is_kubernetes());
+}
+
+#[test]
+fn unknown_distribution_is_neither() {
+    let config = ClusterConfig::from_json(r#"{"cluster_name":"t","distribution":"nomad"}"#).unwrap();
+    assert!(!config.is_k3s());
+    assert!(!config.is_kubernetes());
+}
+
+// ── to_node_identity edge cases ──────────────────────────────
+
+#[test]
+fn to_node_identity_kubernetes_distribution() {
+    let json = r#"{"cluster_name":"kube-test","distribution":"kubernetes","role":"server","cluster_init":true}"#;
+    let config = ClusterConfig::from_json(json).unwrap();
+    let identity = config.to_node_identity();
+    assert_eq!(identity.profile, "kubernetes-cloud-server");
+}
+
+#[test]
+fn to_node_identity_fluxcd_defaults() {
+    let json = r#"{"cluster_name":"test","fluxcd":{"source_url":"https://github.com/org/repo"}}"#;
+    let config = ClusterConfig::from_json(json).unwrap();
+    let identity = config.to_node_identity();
+    assert!(identity.fluxcd.enable);
+    assert_eq!(identity.fluxcd.auth, "token");
+}
+
+#[test]
+fn to_node_identity_agent_server_addr() {
+    let json = r#"{"cluster_name":"test","role":"agent","join_server":"https://10.0.0.1:6443"}"#;
+    let config = ClusterConfig::from_json(json).unwrap();
+    let identity = config.to_node_identity();
+    assert_eq!(identity.kubernetes.server_addr.as_deref(), Some("https://10.0.0.1:6443"));
+}
+
+// ── Parsing edge cases ──────────────────────────────
+
+#[test]
+fn parse_with_unknown_fields_succeeds() {
+    let json = r#"{"cluster_name":"test","unknown_field":"value","another":42}"#;
+    let result = ClusterConfig::from_json(json);
+    assert!(result.is_ok(), "unknown fields should not cause errors");
+}
+
+#[test]
+fn parse_missing_cluster_name_fails() {
+    let json = r#"{"role":"server"}"#;
+    let result = ClusterConfig::from_json(json);
+    assert!(result.is_err(), "cluster_name is required");
+}
+
+#[test]
+fn parse_empty_json_fails() {
+    let result = ClusterConfig::from_json("");
+    assert!(result.is_err());
+}
+
+#[test]
+fn parse_empty_object_fails() {
+    let json = r#"{}"#;
+    let result = ClusterConfig::from_json(json);
+    assert!(result.is_err(), "empty object should fail (cluster_name required)");
+}
+
+// ── VPN peer key collision ──────────────────────────────
+
 #[test]
 fn validate_vpn_rejects_duplicate_peer_keys() {
     let json = r#"{
