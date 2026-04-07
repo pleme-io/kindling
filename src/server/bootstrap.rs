@@ -1,8 +1,9 @@
 //! Bootstrap state machine for server mode (max-baked AMI).
 //!
 //! Default path: read config → write secrets → set hostname → write K3s config
-//! + sentinel → start WireGuard → write FluxCD sentinel → exit. K3s and FluxCD
-//! start after init exits via systemd ordering.
+//! + sentinel → start WireGuard → write FluxCD sentinel → exit.
+//!
+//! K3s and FluxCD start after init exits via systemd ordering.
 //!
 //! Force-rebuild path (bare-metal): same as above but runs nixos-rebuild after
 //! secrets, before K3s config. Gated by `force_rebuild: true` in cluster config.

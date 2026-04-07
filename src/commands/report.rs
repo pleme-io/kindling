@@ -67,11 +67,11 @@ async fn run_async(
         _ => {
             print_table(&stored.report);
             println!(
-                "  {} {}  {} {}",
+                "  {} {}  {} {}s",
                 "Checksum:".dimmed(),
                 &stored.checksum[..std::cmp::min(stored.checksum.len(), 24)],
                 "Age:".dimmed(),
-                format!("{}s", stored.age_secs())
+                stored.age_secs()
             );
         }
     }

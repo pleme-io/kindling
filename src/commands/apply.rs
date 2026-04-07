@@ -54,17 +54,8 @@ pub fn run(diff_only: bool) -> Result<()> {
     Ok(())
 }
 
-/// Run a full rebuild from a node.yaml path.
-///
-/// Shared entry point used by both `kindling apply` and `kindling server bootstrap`.
-/// The optional `context` label is printed before the rebuild command for traceability
-/// (e.g. the bootstrap phase name).
-pub fn run_rebuild_from_path(node_path: &std::path::Path) -> Result<()> {
-    run_rebuild_from_path_with_context(node_path, None)
-}
-
-/// Like [`run_rebuild_from_path`] but with an optional context label printed
-/// before the rebuild command (e.g. `"[bootstrap: nix_rebuild_running]"`).
+/// Run a full rebuild from a node.yaml path, with an optional context label
+/// printed before the rebuild command (e.g. `"[bootstrap: nix_rebuild_running]"`).
 pub fn run_rebuild_from_path_with_context(
     node_path: &std::path::Path,
     context: Option<&str>,

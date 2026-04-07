@@ -51,7 +51,7 @@ pub fn run(args: AmiBuildArgs) -> Result<()> {
     let github_token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
     if !github_token.is_empty() {
         let token_path = Path::new("/etc/nix/github-access-token");
-        let token_dir = token_path.parent().unwrap();
+        let token_dir = Path::new("/etc/nix");
         std::fs::create_dir_all(token_dir)
             .with_context(|| format!("failed to create {}", token_dir.display()))?;
         std::fs::write(token_path, &github_token)
