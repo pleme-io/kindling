@@ -261,3 +261,118 @@ pub fn save_auto_install(value: bool) -> Result<()> {
     std::fs::write(&path, content).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_default_has_no_auto_install() {
+        let config = Config::default();
+        assert!(config.auto_install.is_none());
+    }
+
+    #[test]
+    fn config_default_has_no_backend() {
+        let config = Config::default();
+        assert!(config.backend.is_none());
+    }
+
+    #[test]
+    fn config_default_has_empty_nodes() {
+        let config = Config::default();
+        assert!(config.nodes.is_empty());
+    }
+
+    #[test]
+    fn daemon_config_default_addresses() {
+        let dc = DaemonConfig::default();
+        assert_eq!(dc.http_addr, "127.0.0.1:9100");
+        assert_eq!(dc.grpc_addr, "127.0.0.1:9101");
+        assert_eq!(dc.log_level, "info");
+    }
+
+    #[test]
+    fn telemetry_config_default_disabled() {
+        let tc = TelemetryConfig::default();
+        assert!(!tc.enabled);
+        assert_eq!(tc.push_interval_secs, 60);
+    }
+
+    #[test]
+    fn gc_config_default_zero() {
+        let gc = GcConfig::default();
+        assert_eq!(gc.schedule_secs, 0);
+    }
+
+    #[test]
+    fn report_config_defaults() {
+        let rc = ReportConfig::default();
+        assert_eq!(rc.refresh_interval_secs, 300);
+        assert_eq!(rc.max_age_secs, 600);
+    }
+
+    #[test]
+    fn fleet_controller_config_default_disabled() {
+        let fc = FleetControllerConfig::default();
+        assert!(!fc.enabled);
+    }
+
+    #[test]
+    fn load_with_path_merges_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml_path = dir.path().join("test-config.yaml");
+        std::fs::write(&yaml_path, "auto_install: true\nbackend: determinate\n").unwrap();
+        let config = load_with_path(yaml_path.to_str().unwrap()).unwrap();
+        assert_eq!(config.auto_install, Some(true));
+        assert_eq!(config.backend.as_deref(), Some("determinate"));
+    }
+
+    #[test]
+    fn config_deserializes_from_yaml() {
+        let yaml = r#"
+auto_install: false
+backend: upstream
+nodes:
+  prod:
+    url: https://prod.example.com:9100
+    description: Production node
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.auto_install, Some(false));
+        assert_eq!(config.backend.as_deref(), Some("upstream"));
+        let prod = config.nodes.get("prod").unwrap();
+        assert_eq!(prod.url, "https://prod.example.com:9100");
+        assert_eq!(prod.description.as_deref(), Some("Production node"));
+    }
+
+    #[test]
+    fn config_serializes_and_deserializes() {
+        let mut config = Config::default();
+        config.auto_install = Some(true);
+        config.backend = Some("determinate".to_string());
+
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let deserialized: Config = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(deserialized.auto_install, Some(true));
+        assert_eq!(deserialized.backend.as_deref(), Some("determinate"));
+    }
+
+    #[test]
+    fn identity_config_default_empty() {
+        let ic = IdentityConfig::default();
+        assert!(ic.overlay_dirs.is_empty());
+        assert!(ic.private_fields.is_empty());
+    }
+
+    #[test]
+    fn daemon_config_with_nodes() {
+        let yaml = r#"
+nodes:
+  staging:
+    url: http://localhost:9100
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.nodes.contains_key("staging"));
+    }
+}
