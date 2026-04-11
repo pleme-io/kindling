@@ -144,18 +144,27 @@ pub fn run(args: AmiBuildArgs) -> Result<()> {
         println!("[phase:{phase}/{total_phases}] OK — all checks passed");
     }
 
-    // ── Phase 5: Post-build cleanup ───────────────────────────────
+    // ── Phase 5: Post-build cleanup (convergence minimality) ───────
+    // The AMI checkpoint should contain ONLY what's needed for convergence.
+    // Every byte removed = faster boot, smaller snapshot, less attack surface.
     phase += 1;
-    println!("[phase:{phase}/{total_phases}] Post-build cleanup");
+    println!("[phase:{phase}/{total_phases}] Post-build cleanup — convergence minimality");
 
-    // Nix garbage collection
+    // Nix garbage collection — remove all generations except current
+    println!("  :: nix-collect-garbage -d");
     let _ = Command::new("nix-collect-garbage").arg("-d").status();
 
-    // Remove build-time secrets
+    // Optimise store — hardlink identical files (significant savings)
+    println!("  :: nix-store --optimise");
+    let _ = Command::new("nix-store").arg("--optimise").status();
+
+    // Remove build-time secrets (MUST NOT be in AMI)
     let files_to_remove = [
         "/root/.config/nix/nix.conf",
         "/etc/nix/github-access-token",
         "/root/.ssh/authorized_keys",
+        "/root/.bash_history",
+        "/root/.nix-defexpr",
     ];
     for path in &files_to_remove {
         if Path::new(path).exists() {
@@ -163,20 +172,39 @@ pub fn run(args: AmiBuildArgs) -> Result<()> {
         }
     }
 
-    // Clean journals
+    // Remove build-time directories
+    for dir in ["/root/.cache", "/root/.local/share/nix"] {
+        if Path::new(dir).exists() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    // Clean journals — zero retained
     let _ = Command::new("journalctl")
         .args(["--rotate", "--vacuum-time=1s"])
         .status();
 
-    // Clean temp files
-    for dir in ["/tmp", "/var/tmp", "/var/log/journal"] {
-        if Path::new(dir).exists() {
-            let _ = std::fs::remove_dir_all(dir);
-            let _ = std::fs::create_dir_all(dir);
+    // Clean temp files and logs
+    for dir in ["/tmp", "/var/tmp", "/var/log/journal", "/var/log/btmp", "/var/log/wtmp"] {
+        let p = Path::new(dir);
+        if p.is_dir() {
+            let _ = std::fs::remove_dir_all(p);
+            let _ = std::fs::create_dir_all(p);
+        } else if p.is_file() {
+            // btmp/wtmp are files — truncate rather than delete
+            let _ = std::fs::write(p, b"");
         }
     }
 
-    // Trim filesystem
+    // Zero free space before snapshot (makes compression much more effective)
+    println!("  :: dd zero fill for snapshot compression");
+    let _ = Command::new("dd")
+        .args(["if=/dev/zero", "of=/zero.fill", "bs=1M"])
+        .status(); // Runs until disk full, exits non-zero — that's expected
+    let _ = std::fs::remove_file("/zero.fill");
+
+    // Sync + trim filesystem
+    let _ = Command::new("sync").status();
     let _ = Command::new("fstrim").arg("/").status();
 
     println!("[phase:{phase}/{total_phases}] OK — cleanup complete");

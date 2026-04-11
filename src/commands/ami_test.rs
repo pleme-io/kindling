@@ -93,6 +93,9 @@ pub fn run(args: AmiTestArgs) -> Result<()> {
         check_no_world_writable_bins(),
     ]);
 
+    // Convergence minimality — verify the closure is optimally small.
+    results.push(check_closure_size());
+
     let total = results.len();
     let passed = results.iter().filter(|r| r.passed).count();
 
@@ -638,6 +641,40 @@ fn check_no_world_writable_bins() -> TestResult {
     };
     TestResult {
         name: "no-world-writable-bins".into(),
+        passed,
+        message,
+        duration_ms: start.elapsed().as_millis() as u64,
+    }
+}
+
+/// Convergence minimality: verify the system closure isn't bloated.
+/// A smaller closure = faster AMI build, smaller snapshot, faster boot,
+/// less attack surface. Threshold: 8 GiB (generous for K3s + hardening).
+fn check_closure_size() -> TestResult {
+    let start = Instant::now();
+    // nix path-info -S /run/current-system gives closure size in bytes
+    let (passed, message) = match run_cmd("nix", &["path-info", "-S", "/run/current-system"]) {
+        Ok(out) => {
+            // Output format: "/nix/store/...-nixos-system-...    <size>"
+            // The size is the last whitespace-separated token
+            let size_str = out.split_whitespace().last().unwrap_or("0");
+            match size_str.parse::<u64>() {
+                Ok(bytes) => {
+                    let gib = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+                    let max_gib = 8.0;
+                    if gib <= max_gib {
+                        (true, format!("closure size: {:.2} GiB (limit: {:.0} GiB)", gib, max_gib))
+                    } else {
+                        (false, format!("closure too large: {:.2} GiB (limit: {:.0} GiB) — remove unnecessary packages", gib, max_gib))
+                    }
+                }
+                Err(_) => (true, format!("could not parse size '{}', skipping", size_str)),
+            }
+        }
+        Err(e) => (true, format!("nix path-info unavailable ({}), skipping size check", e)),
+    };
+    TestResult {
+        name: "closure-size".into(),
         passed,
         message,
         duration_ms: start.elapsed().as_millis() as u64,
