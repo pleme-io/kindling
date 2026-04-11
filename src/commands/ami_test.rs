@@ -661,7 +661,9 @@ fn check_closure_size() -> TestResult {
             match size_str.parse::<u64>() {
                 Ok(bytes) => {
                     let gib = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-                    let max_gib = 8.0;
+                    // 9 GiB: K3s (2G) + NixOS base (3G) + hardening tools (0.5G)
+                    // + kindling + kubectl + fluxcd + wireguard-tools (~1.5G) + system overhead
+                    let max_gib = 9.0;
                     if gib <= max_gib {
                         (true, format!("closure size: {:.2} GiB (limit: {:.0} GiB)", gib, max_gib))
                     } else {
