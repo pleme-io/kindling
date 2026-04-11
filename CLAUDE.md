@@ -15,19 +15,23 @@ Runs inside the Packer build instance. 5 phases:
 2. **nixos-rebuild switch** -- installs the full NixOS config from the flake ref
 3. **Clean K3s state** -- stops K3s, removes `/var/lib/rancher/k3s/server/`
    entirely (datastore + TLS + creds) so kindling-init can seed deterministic PKI
-4. **AMI validation** -- delegates to `ami-test` (11 checks)
-5. **Cleanup** -- nix-collect-garbage, remove build-time secrets, rotate journals, fstrim
+4. **AMI validation** -- delegates to `ami-test` (18 checks)
+5. **Convergence minimality cleanup** -- nix-collect-garbage, nix-store --optimise,
+   remove build-time secrets/caches, zero-fill free space, sync + fstrim
 
 Flags: `--skip-rebuild` (for testing), `--skip-validation` (for non-K3s profiles like attic).
 
 ### `kindling ami-test`
 
-Static AMI validation before Packer snapshots. 11 checks:
+Static AMI validation before Packer snapshots. 18 checks across three categories.
+Any single failure prevents the AMI from being created.
+
+**Operational checks (11):**
 
 | Check | What it validates |
 |-------|-------------------|
 | `kindling-binary` | kindling CLI is in PATH |
-| `k3s-binary` | K3s is installed |
+| `k3s-binary` | K3s is installed (K3s distribution) |
 | `wireguard-tools` | wg CLI is available |
 | `nixos-rebuild` | nixos-rebuild is available |
 | `kindling-init-service` | kindling-init.service is enabled |
@@ -37,6 +41,23 @@ Static AMI validation before Packer snapshots. 11 checks:
 | `no-stale-tls` | No stale TLS certs (K3s would ignore seeded PKI) |
 | `no-leaked-secrets` | No cluster-config.json, server-state.json, or /run/secrets.d entries |
 | `network-connectivity` | cache.nixos.org is reachable |
+
+**FedRAMP compliance checks (6) — convergence invariants from kindling-profiles compliance modules:**
+
+| Check | Controls | What it validates |
+|-------|----------|-------------------|
+| `ssh-hardening` | IA-2, AC-17 | PasswordAuthentication=no, PermitRootLogin restricted |
+| `auditd-enabled` | AU-2, AU-12 | auditd.service is enabled |
+| `fail2ban-enabled` | SC-5, SI-4 | fail2ban.service is enabled |
+| `sysctl-hardening` | SC-5, SC-7, SI-16 | tcp_syncookies=1, rp_filter=1, dmesg_restrict=1, protected_symlinks=1 |
+| `firewall-active` | SC-7, AC-4 | iptables has rules beyond default |
+| `no-world-writable-bins` | SI-7 | No chmod 777 binaries in system paths |
+
+**Convergence minimality (1):**
+
+| Check | What it validates |
+|-------|-------------------|
+| `closure-size` | System closure <= 8 GiB (prevents bloat, reduces attack surface) |
 
 ### `kindling ami-integration-test`
 
