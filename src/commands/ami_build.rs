@@ -158,17 +158,37 @@ pub fn run(args: AmiBuildArgs) -> Result<()> {
     println!("  :: nix-store --optimise");
     let _ = Command::new("nix-store").arg("--optimise").status();
 
-    // Remove build-time secrets (MUST NOT be in AMI)
+    // Remove build-time secrets (MUST NOT be in AMI).
+    // All file operations in Rust — no shell, no sed, no silent failures.
     let files_to_remove = [
         "/root/.config/nix/nix.conf",
         "/etc/nix/github-access-token",
-        "/root/.ssh/authorized_keys",
         "/root/.bash_history",
         "/root/.nix-defexpr",
     ];
     for path in &files_to_remove {
         if Path::new(path).exists() {
             std::fs::remove_file(path).ok();
+        }
+    }
+
+    // Remove SSH authorized_keys from ALL users (Packer injects temporary keys).
+    // This replaces Packer's shell cleanup which uses sed and fails noisily.
+    for ssh_dir_path in ["/root/.ssh"] {
+        let ssh_dir = Path::new(ssh_dir_path);
+        if ssh_dir.is_dir() {
+            let _ = std::fs::remove_dir_all(ssh_dir);
+            println!("  :: removed {}", ssh_dir_path);
+        }
+    }
+    // Also clean any user home .ssh directories
+    if let Ok(entries) = std::fs::read_dir("/home") {
+        for entry in entries.flatten() {
+            let ssh_path = entry.path().join(".ssh");
+            if ssh_path.is_dir() {
+                let _ = std::fs::remove_dir_all(&ssh_path);
+                println!("  :: removed {}", ssh_path.display());
+            }
         }
     }
 
