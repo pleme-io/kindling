@@ -594,20 +594,46 @@ pub fn run(config_path: &Path) -> Result<()> {
         }
     }
 
-    // Phase: Write FluxCD sentinel (FluxCD starts after K3s via systemd ordering)
+    // Phase: Write FluxCD sync manifest + sentinel
+    // gotk-components (CRDs + controllers) are baked into the AMI via K3s auto-deploy.
+    // gotk-sync (GitRepository + Kustomization) is written HERE at runtime because
+    // it contains the cluster-specific repo URL and reconcile path.
+    // This is convergence theory: resolve at the earliest layer, but ONLY what's
+    // resolvable. The Git URL is cluster-specific (runtime), not build-time.
     if state.phase == BootstrapPhase::WireguardReady {
         let config = ClusterConfig::load(config_path)?;
 
-        if config.fluxcd.is_some() && config.role == "server" {
-            let sentinel = std::path::Path::new("/var/lib/kindling/fluxcd-ready");
-            if let Some(parent) = sentinel.parent() {
-                let _ = std::fs::create_dir_all(parent);
+        if let Some(ref fluxcd) = config.fluxcd {
+            if config.role == "server" {
+                // Write gotk-sync manifest to K3s auto-deploy directory
+                let manifests_dir = std::path::Path::new("/var/lib/rancher/k3s/server/manifests");
+                let _ = std::fs::create_dir_all(manifests_dir);
+
+                let source_url = fluxcd.source_url.as_deref().unwrap_or("");
+                let branch = fluxcd.branch.as_deref().unwrap_or("main");
+                let reconcile_path = fluxcd.reconcile_path.as_deref().unwrap_or(".");
+                let reconcile_interval = fluxcd.reconcile_interval.as_deref().unwrap_or("2m0s");
+
+                let sync_manifest = format!(
+                    "---\napiVersion: source.toolkit.fluxcd.io/v1\nkind: GitRepository\nmetadata:\n  name: flux-system\n  namespace: flux-system\nspec:\n  interval: {reconcile_interval}\n  ref:\n    branch: {branch}\n  secretRef:\n    name: flux-system\n  url: {source_url}\n---\napiVersion: kustomize.toolkit.fluxcd.io/v1\nkind: Kustomization\nmetadata:\n  name: flux-system\n  namespace: flux-system\nspec:\n  interval: {reconcile_interval}\n  path: {reconcile_path}\n  prune: true\n  sourceRef:\n    kind: GitRepository\n    name: flux-system\n",
+                );
+
+                let sync_path = manifests_dir.join("gotk-sync.yaml");
+                std::fs::write(&sync_path, &sync_manifest)
+                    .with_context(|| format!("failed to write FluxCD sync manifest to {}", sync_path.display()))?;
+                println!("{} FluxCD sync manifest: {}", "ok".green().bold(), sync_path.display());
+
+                // Write sentinel — fluxcd-bootstrap.service waits for this
+                let sentinel = std::path::Path::new("/var/lib/kindling/fluxcd-ready");
+                if let Some(parent) = sentinel.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                std::fs::write(sentinel, "fluxcd")
+                    .with_context(|| format!("failed to write FluxCD sentinel {}", sentinel.display()))?;
+                println!("{} FluxCD sentinel: {} (service will start after K3s)", "ok".green().bold(), sentinel.display());
             }
-            std::fs::write(sentinel, "fluxcd")
-                .with_context(|| format!("failed to write FluxCD sentinel {}", sentinel.display()))?;
-            println!("{} FluxCD sentinel: {} (service will start after K3s)", "ok".green().bold(), sentinel.display());
         } else {
-            println!("{} FluxCD not configured, skipping sentinel", "::".blue().bold());
+            println!("{} FluxCD not configured, skipping", "::".blue().bold());
         }
 
         state.transition(BootstrapPhase::FluxcdConfigWritten)?;
