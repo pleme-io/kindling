@@ -609,13 +609,46 @@ pub fn run(config_path: &Path) -> Result<()> {
                 let manifests_dir = std::path::Path::new("/var/lib/rancher/k3s/server/manifests");
                 let _ = std::fs::create_dir_all(manifests_dir);
 
-                let source_url = fluxcd.source_url.as_deref().unwrap_or("");
-                let branch = fluxcd.branch.as_deref().unwrap_or("main");
-                let reconcile_path = fluxcd.reconcile_path.as_deref().unwrap_or(".");
-                let reconcile_interval = fluxcd.reconcile_interval.as_deref().unwrap_or("2m0s");
+                let git_repo = serde_json::json!({
+                    "apiVersion": "source.toolkit.fluxcd.io/v1",
+                    "kind": "GitRepository",
+                    "metadata": {
+                        "name": "flux-system",
+                        "namespace": "flux-system"
+                    },
+                    "spec": {
+                        "interval": fluxcd.reconcile_interval.as_deref().unwrap_or("2m0s"),
+                        "ref": {
+                            "branch": fluxcd.branch.as_deref().unwrap_or("main")
+                        },
+                        "secretRef": { "name": "flux-system" },
+                        "url": fluxcd.source_url.as_deref().unwrap_or("")
+                    }
+                });
 
+                let kustomization = serde_json::json!({
+                    "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+                    "kind": "Kustomization",
+                    "metadata": {
+                        "name": "flux-system",
+                        "namespace": "flux-system"
+                    },
+                    "spec": {
+                        "interval": fluxcd.reconcile_interval.as_deref().unwrap_or("2m0s"),
+                        "path": fluxcd.reconcile_path.as_deref().unwrap_or("."),
+                        "prune": fluxcd.reconcile_prune.unwrap_or(true),
+                        "sourceRef": {
+                            "kind": "GitRepository",
+                            "name": "flux-system"
+                        }
+                    }
+                });
+
+                // Serialize as YAML multi-doc (K3s auto-deploy format)
                 let sync_manifest = format!(
-                    "---\napiVersion: source.toolkit.fluxcd.io/v1\nkind: GitRepository\nmetadata:\n  name: flux-system\n  namespace: flux-system\nspec:\n  interval: {reconcile_interval}\n  ref:\n    branch: {branch}\n  secretRef:\n    name: flux-system\n  url: {source_url}\n---\napiVersion: kustomize.toolkit.fluxcd.io/v1\nkind: Kustomization\nmetadata:\n  name: flux-system\n  namespace: flux-system\nspec:\n  interval: {reconcile_interval}\n  path: {reconcile_path}\n  prune: true\n  sourceRef:\n    kind: GitRepository\n    name: flux-system\n",
+                    "---\n{}\n---\n{}\n",
+                    serde_yaml::to_string(&git_repo).unwrap_or_default(),
+                    serde_yaml::to_string(&kustomization).unwrap_or_default(),
                 );
 
                 let sync_path = manifests_dir.join("gotk-sync.yaml");
