@@ -17,14 +17,9 @@ use crate::domain::nix_service::NixService;
 use crate::domain::node_service::NodeService;
 
 pub async fn run(config: DaemonConfig) -> Result<()> {
-    // Init tracing
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&config.log_level));
-
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .json()
-        .init();
+    // JSON tracing for systemd/pod log drivers. shidou honors RUST_LOG and
+    // falls back to config.log_level when unset.
+    shidou::init_tracing_json_with_level(&config.log_level);
 
     info!(version = env!("CARGO_PKG_VERSION"), "Kindling daemon starting");
 
