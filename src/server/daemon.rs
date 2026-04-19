@@ -157,9 +157,13 @@ pub async fn run(config: DaemonConfig) -> Result<()> {
         });
     }
 
-    // Run HTTP server with graceful shutdown
+    // Run HTTP server with graceful shutdown via tsunagu.
+    // The controller installs SIGTERM+SIGINT handlers once at startup; every
+    // server or background task that needs drain notification asks for a
+    // token via .token() and awaits .wait().
+    let shutdown = tsunagu::ShutdownController::install();
     axum::serve(listener, app.into_make_service())
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown.token().wait())
         .await
         .context("HTTP server error")?;
 
@@ -182,28 +186,3 @@ async fn graphql_handler(
     schema.execute(req.into_inner()).await.into()
 }
 
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            tracing::error!(error = %e, "failed to listen for Ctrl+C");
-        }
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => { sig.recv().await; }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to install SIGTERM handler");
-            }
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => { info!("Received Ctrl+C, shutting down"); },
-        _ = terminate => { info!("Received SIGTERM, shutting down"); },
-    }
-}

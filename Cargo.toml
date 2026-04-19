@@ -34,6 +34,9 @@ libc = "0.2"
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
+# Graceful shutdown (SIGTERM/SIGINT coordinator shared across pleme-io daemons)
+tsunagu = { git = "https://github.com/pleme-io/tsunagu" }
+
 # HTTP server
 axum = { version = "0.8", features = ["json"] }
 tower-http = { version = "0.6", features = ["trace", "cors"] }
