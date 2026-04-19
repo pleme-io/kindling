@@ -5455,6 +5455,10 @@ rec {
             features = [ "env-filter" "json" ];
           }
           {
+            name = "tsunagu";
+            packageId = "tsunagu";
+          }
+          {
             name = "x25519-dalek";
             packageId = "x25519-dalek";
             features = [ "static_secrets" ];
@@ -9370,6 +9374,53 @@ rec {
         libName = "try_lock";
         authors = [
           "Sean McArthur <sean@seanmonstar.com>"
+        ];
+
+      };
+      "tsunagu" = rec {
+        crateName = "tsunagu";
+        version = "0.1.0";
+        edition = "2024";
+        workspace_member = null;
+        src = pkgs.fetchgit {
+          url = "https://github.com/pleme-io/tsunagu";
+          rev = "6986dcfb7b78d199cca8cb91dbd44dd7edab9dda";
+          sha256 = "021jsq6qxrg8zp9xn4i7r2rckdzgbjhan1gnzk8cslwlaxdxhbcj";
+        };
+        dependencies = [
+          {
+            name = "dirs";
+            packageId = "dirs";
+          }
+          {
+            name = "serde";
+            packageId = "serde";
+            features = [ "derive" ];
+          }
+          {
+            name = "serde_json";
+            packageId = "serde_json";
+          }
+          {
+            name = "thiserror";
+            packageId = "thiserror";
+          }
+          {
+            name = "tokio";
+            packageId = "tokio";
+            features = [ "rt" "net" "signal" "sync" "macros" "time" "io-util" ];
+          }
+          {
+            name = "tracing";
+            packageId = "tracing";
+          }
+        ];
+        devDependencies = [
+          {
+            name = "tokio";
+            packageId = "tokio";
+            features = [ "rt-multi-thread" "test-util" "macros" ];
+          }
         ];
 
       };
