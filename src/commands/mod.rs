@@ -7,6 +7,7 @@ pub mod check;
 pub mod daemon;
 pub mod ensure;
 pub mod fleet;
+pub mod harden;
 pub mod init;
 pub mod install;
 pub mod profile;

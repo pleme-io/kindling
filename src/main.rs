@@ -4,6 +4,7 @@ mod commands;
 mod config;
 mod direnv_setup;
 mod domain;
+mod harden;
 #[cfg(feature = "grpc")]
 mod grpc;
 mod nix;
@@ -161,6 +162,9 @@ enum Commands {
         #[command(subcommand)]
         command: VpnCommands,
     },
+
+    /// Apply one or more hardening profiles to this host
+    Harden(commands::harden::HardenArgs),
 
     /// Build a NixOS AMI: nixos-rebuild + clean K3s state + validate + cleanup
     AmiBuild(commands::ami_build::AmiBuildArgs),
@@ -334,6 +338,7 @@ fn main() -> anyhow::Result<()> {
             ServerCommands::Bootstrap { config } => commands::server::run_bootstrap(&config),
             ServerCommands::Status => commands::server::run_status(),
         },
+        Commands::Harden(args) => commands::harden::run_cmd(args),
         Commands::AmiBuild(args) => commands::ami_build::run(args),
         Commands::AmiTest(args) => commands::ami_test::run(args),
         Commands::AmiIntegrationTest(args) => commands::ami_integration_test::run(args),
