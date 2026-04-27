@@ -1,5 +1,15 @@
 # kindling
 
+> **★★★ CSE / Knowable Construction.** This repo operates under
+> **Constructive Substrate Engineering** — canonical specification at
+> [`pleme-io/theory/CONSTRUCTIVE-SUBSTRATE-ENGINEERING.md`](https://github.com/pleme-io/theory/blob/main/CONSTRUCTIVE-SUBSTRATE-ENGINEERING.md).
+> The Compounding Directive (operational rules: solve once, load-bearing
+> fixes only, idiom-first, models stay current, direction beats velocity)
+> is in the org-level pleme-io/CLAUDE.md ★★★ section. Read both before
+> non-trivial changes. K3s VM cluster orchestrator; renders typed Lisp
+> catalogs to running guests via AMI build, fleet sync, and unattended
+> Nix install.
+
 Cross-platform unattended Nix installer, fleet manager, and server bootstrap
 daemon. Rust CLI with NixOS and home-manager modules.
 
