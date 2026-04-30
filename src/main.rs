@@ -252,6 +252,43 @@ enum VpnCommands {
         #[arg(long)]
         check_files: bool,
     },
+    /// Generate WireGuard key material for a portao JIT VPN concentrator —
+    /// hub keypair, per-spoke keypairs + PSKs, hub-side peers.json,
+    /// SSM put-parameter commands, and SOPS path hints. Pure Rust, no
+    /// shell-out to `wg`.
+    PortaoBootstrap {
+        /// Logical environment name (akeyless-dev, akeyless-saas, …).
+        /// Used as the link name in vpn-links.nix and the SSM scope.
+        #[arg(long)]
+        env_name: String,
+
+        /// First three octets of the WG /24 (e.g. `10.100.30`). Hub
+        /// goes at .254, spokes at .1, .2, .3, …
+        #[arg(long, default_value = "10.100.30")]
+        subnet_base: String,
+
+        /// Spoke node names (one per workstation that should reach
+        /// the env). Repeatable: `--spoke ryn --spoke cid --spoke rio`.
+        #[arg(long = "spoke", value_name = "NODE")]
+        spokes: Vec<String>,
+
+        /// Optional spoke-side WG interface suffix override (default
+        /// is the env's last hyphen-segment, truncated to 3 chars).
+        #[arg(long)]
+        interface_suffix: Option<String>,
+
+        /// AWS region for the SSM put-parameter command hints.
+        #[arg(long, default_value = "us-east-1")]
+        region: String,
+
+        /// AWS profile for the SSM put-parameter command hints.
+        #[arg(long, default_value = "akeyless-development")]
+        aws_profile: String,
+
+        /// Output format: text (default), yaml, or json.
+        #[arg(long, default_value = "text")]
+        output: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -333,6 +370,23 @@ fn main() -> anyhow::Result<()> {
                 config,
                 check_files,
             } => commands::vpn::run_validate(&config, check_files),
+            VpnCommands::PortaoBootstrap {
+                env_name,
+                subnet_base,
+                spokes,
+                interface_suffix,
+                region,
+                aws_profile,
+                output,
+            } => commands::vpn::run_portao_bootstrap(
+                &env_name,
+                &subnet_base,
+                &spokes,
+                interface_suffix.as_deref(),
+                &region,
+                &aws_profile,
+                &output,
+            ),
         },
         Commands::Server { command } => match command {
             ServerCommands::Bootstrap { config } => commands::server::run_bootstrap(&config),

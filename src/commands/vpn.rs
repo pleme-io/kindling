@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use crate::server::cluster_config::ClusterConfig;
-use crate::vpn::{keygen, validate};
+use crate::vpn::{keygen, portao_bootstrap, validate};
 
 /// List available VPN profiles and their configurations.
 pub fn run_profiles() -> Result<()> {
@@ -92,4 +92,27 @@ pub fn run_validate(config_path: &str, check_files: bool) -> Result<()> {
         }
         Err(e) => Err(e),
     }
+}
+
+/// Generate WireGuard key material for a portao JIT VPN concentrator.
+/// Pure-Rust keygen via x25519-dalek; no shell-out to `wg`.
+pub fn run_portao_bootstrap(
+    env_name: &str,
+    subnet_base: &str,
+    spokes: &[String],
+    interface_suffix: Option<&str>,
+    region: &str,
+    aws_profile: &str,
+    output_format: &str,
+) -> Result<()> {
+    let spoke_refs: Vec<&str> = spokes.iter().map(String::as_str).collect();
+    let input = portao_bootstrap::BootstrapInput {
+        env_name,
+        subnet_base,
+        spokes: &spoke_refs,
+        interface_suffix,
+        region,
+        aws_profile,
+    };
+    portao_bootstrap::run(&input, output_format)
 }
