@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use crate::server::cluster_config::ClusterConfig;
-use crate::vpn::{keygen, portao_bootstrap, validate};
+use crate::vpn::{keygen, portao_bootstrap, portao_fleet, validate};
 
 /// List available VPN profiles and their configurations.
 pub fn run_profiles() -> Result<()> {
@@ -115,4 +115,12 @@ pub fn run_portao_bootstrap(
         aws_profile,
     };
     portao_bootstrap::run(&input, output_format)
+}
+
+/// Bootstrap an entire portao fleet from a YAML manifest.
+///
+/// Calls [`portao_bootstrap`] once per entry in the manifest, then emits
+/// one consolidated output (text/yaml/json) covering every portao.
+pub fn run_portao_fleet(config: &str, output_format: &str) -> Result<()> {
+    portao_fleet::run(Path::new(config), output_format)
 }

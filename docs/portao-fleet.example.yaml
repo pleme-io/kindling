@@ -1,0 +1,98 @@
+# kindling vpn portao-fleet --config docs/portao-fleet.example.yaml
+#
+# Reference manifest covering the akeyless multi-account portao fleet that
+# replaces FortiClient. Every workstation listed in default_spokes gets keys
+# for every portao listed below; the matching SOPS entries are emitted in one
+# pass.
+#
+# Subnet allocation: 10.100.30/24 is the existing akeyless-dev portao (LIVE).
+# This fleet starts at 10.100.31 and increments by /24. Hub goes at .254 and
+# spokes at .1, .2, .3 within each /24.
+#
+# After running:
+#   1. Paste the printed `clusters: { … }` and per-node WG blocks into
+#      `nix/secrets.yaml` via `sops secrets.yaml`.
+#   2. Paste the printed `vpn-links.nix` snippet into
+#      `nix/lib/vpn-links.nix` *with `hub.publicKey = null`* until the
+#      operator decides to flip a portao live.
+#   3. AWS SSO into each profile and run that profile's emitted
+#      `aws ssm put-parameter` block.
+#   4. `nix run .#rebuild` on every spoke node — entries are inert (publicKey
+#      = null) so nothing materializes yet.
+#   5. To go live for one env: edit vpn-links.nix, set hub.publicKey to the
+#      value emitted in Step 2, then `pangea apply` for that env's portao
+#      workspace. First wg-quick PreUp wakes the hub.
+
+default_spokes:
+  - ryn
+  - cid
+  - rio
+
+portaos:
+  # akeyless-cicd — central ArgoCD lives here (argocd.akeyless.io)
+  - env_name: akeyless-cicd
+    subnet_base: "10.100.31"
+    region: us-east-1
+    aws_profile: akeyless-cicd
+    advertise_cidrs: ["10.0.0.0/16"]
+    interface_suffix: cic
+
+  # akeyless-staging us-east-2 — us-east-2-staging-eks, us-east-2-dev-eks-new
+  - env_name: akeyless-staging-use2
+    subnet_base: "10.100.32"
+    region: us-east-2
+    aws_profile: akeyless-staging
+    advertise_cidrs: ["10.0.0.0/16"]
+    interface_suffix: stu
+
+  # akeyless-staging eu-west-1 — eu-west-1-staging-eks
+  - env_name: akeyless-staging-euw1
+    subnet_base: "10.100.33"
+    region: eu-west-1
+    aws_profile: akeyless-staging
+    advertise_cidrs: ["10.0.0.0/16"]
+    interface_suffix: ste
+
+  # akeyless-prod us-east-2 — us-east-2-production-eks
+  - env_name: akeyless-prod-use2
+    subnet_base: "10.100.34"
+    region: us-east-2
+    aws_profile: akeyless-production
+    advertise_cidrs: ["10.0.0.0/16"]
+    interface_suffix: pus
+
+  # akeyless-prod eu-west-1 — eu-west-1-production-eks
+  - env_name: akeyless-prod-euw1
+    subnet_base: "10.100.35"
+    region: eu-west-1
+    aws_profile: akeyless-production
+    advertise_cidrs: ["10.0.0.0/16"]
+    interface_suffix: pe1
+
+  # akeyless-prod eu-central-1 — meu-production-eu-central-1-eks (+ splunk peer)
+  - env_name: akeyless-prod-euc1
+    subnet_base: "10.100.36"
+    region: eu-central-1
+    aws_profile: akeyless-production
+    advertise_cidrs:
+      - "10.0.0.0/16"
+      - "10.10.0.0/16" # splunk-vpc peer
+    interface_suffix: pec
+
+  # akeyless-prod eu-west-3 — meu-production-eu-west-3-eks (10.2/16 — unique CIDR)
+  - env_name: akeyless-prod-euw3
+    subnet_base: "10.100.37"
+    region: eu-west-3
+    aws_profile: akeyless-production
+    advertise_cidrs: ["10.2.0.0/16"]
+    interface_suffix: pe3
+
+  # akeyless-customer-success us-east-2 — CS-EKS + janet-vpc + demo-shared
+  - env_name: akeyless-cs-use2
+    subnet_base: "10.100.38"
+    region: us-east-2
+    aws_profile: akeyless-customer-success
+    advertise_cidrs:
+      - "10.50.0.0/16" # janet-vpc
+      - "10.0.0.0/24"  # demo-shared-vpc
+    interface_suffix: csu

@@ -289,6 +289,20 @@ enum VpnCommands {
         #[arg(long, default_value = "text")]
         output: String,
     },
+    /// Bootstrap an entire portao fleet from a single YAML manifest.
+    /// One invocation generates key material for every portao in the
+    /// manifest (multi-account, multi-region) and emits one consolidated
+    /// output the operator merges into SOPS once.
+    PortaoFleet {
+        /// Path to the fleet manifest YAML (see
+        /// `kindling/docs/portao-fleet.example.yaml`).
+        #[arg(long)]
+        config: String,
+
+        /// Output format: text (default), yaml, or json.
+        #[arg(long, default_value = "text")]
+        output: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -387,6 +401,9 @@ fn main() -> anyhow::Result<()> {
                 &aws_profile,
                 &output,
             ),
+            VpnCommands::PortaoFleet { config, output } => {
+                commands::vpn::run_portao_fleet(&config, &output)
+            }
         },
         Commands::Server { command } => match command {
             ServerCommands::Bootstrap { config } => commands::server::run_bootstrap(&config),
