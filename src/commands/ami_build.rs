@@ -172,6 +172,25 @@ pub fn run(args: AmiBuildArgs) -> Result<()> {
         }
     }
 
+    // Remove SSH host keys so every launched instance generates a fresh
+    // per-instance keypair on first sshd start. Without this, every
+    // instance baked from the AMI shares the same private host identity
+    // — fine for a private AMI in one account, fatal for a public AMI
+    // (anyone holding the key can MITM any launched instance and the
+    // client gets no host-fingerprint warning). nixpkgs' ec2-data.nix
+    // only writes host keys when [ ! -e ... ], so deleting both halves
+    // here lets the fresh boot produce unique keys.
+    if let Ok(entries) = std::fs::read_dir("/etc/ssh") {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("ssh_host_") && name.contains("_key") {
+                let _ = std::fs::remove_file(entry.path());
+                println!("  :: removed /etc/ssh/{name}");
+            }
+        }
+    }
+
     // Remove SSH authorized_keys from ALL users (Packer injects temporary keys).
     // This replaces Packer's shell cleanup which uses sed and fails noisily.
     for ssh_dir_path in ["/root/.ssh"] {
