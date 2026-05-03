@@ -953,3 +953,119 @@ fn validate_vpn_rejects_duplicate_peer_keys() {
     let err = config.validate_vpn_security().unwrap_err();
     assert!(err.to_string().contains("duplicate public_key"));
 }
+
+// ── NodeRoleConfig — multi-role sentinel surface ────────────────────
+// Mirrors arch-synthesizer::k3s::NodeRole. Keep slugs byte-identical
+// so the two typescapes agree at the sentinel-path boundary.
+
+#[test]
+fn node_role_slugs_match_arch_synthesizer() {
+    // Byte-for-byte parity with arch-synthesizer::k3s::ALL_ROLE_SLUGS.
+    assert_eq!(
+        NodeRoleConfig::all_slugs(),
+        &["server-init", "server-join", "agent", "agent-gpu", "agent-storage", "agent-ingress"]
+    );
+}
+
+#[test]
+fn node_role_server_init_slug_and_sentinel() {
+    let r = NodeRoleConfig::ServerInit;
+    assert_eq!(r.slug(), "server-init");
+    assert_eq!(
+        r.sentinel_path().to_string_lossy(),
+        "/var/lib/kindling/role-server-init"
+    );
+    assert!(r.is_server());
+    assert_eq!(r.systemd_unit(), "k3s.service");
+}
+
+#[test]
+fn node_role_agent_gpu_routes_to_agent_service() {
+    let r = NodeRoleConfig::AgentGpu { driver: "nvidia-open".into() };
+    assert_eq!(r.slug(), "agent-gpu");
+    assert_eq!(
+        r.sentinel_path().to_string_lossy(),
+        "/var/lib/kindling/role-agent-gpu"
+    );
+    assert!(!r.is_server());
+    assert_eq!(r.systemd_unit(), "k3s-agent.service");
+}
+
+#[test]
+fn node_role_agent_storage_carries_backend() {
+    let r = NodeRoleConfig::AgentStorage { backend: "longhorn".into() };
+    assert_eq!(r.slug(), "agent-storage");
+    assert!(!r.is_server());
+}
+
+#[test]
+fn node_role_agent_ingress_carries_class() {
+    let r = NodeRoleConfig::AgentIngress { ingress_class: "cilium-gateway".into() };
+    assert_eq!(r.slug(), "agent-ingress");
+    assert!(!r.is_server());
+}
+
+#[test]
+fn node_role_serde_roundtrip_all_variants() {
+    let roles = vec![
+        NodeRoleConfig::ServerInit,
+        NodeRoleConfig::ServerJoin,
+        NodeRoleConfig::Agent,
+        NodeRoleConfig::AgentGpu { driver: "nvidia-open".into() },
+        NodeRoleConfig::AgentStorage { backend: "longhorn".into() },
+        NodeRoleConfig::AgentIngress { ingress_class: "cilium-gateway".into() },
+    ];
+    for r in &roles {
+        let json = serde_json::to_string(r).unwrap();
+        let back: NodeRoleConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(*r, back);
+    }
+}
+
+#[test]
+fn node_role_sentinel_paths_are_unique_across_all_variants() {
+    use std::collections::HashSet;
+    let roles = [
+        NodeRoleConfig::ServerInit,
+        NodeRoleConfig::ServerJoin,
+        NodeRoleConfig::Agent,
+        NodeRoleConfig::AgentGpu { driver: "x".into() },
+        NodeRoleConfig::AgentStorage { backend: "y".into() },
+        NodeRoleConfig::AgentIngress { ingress_class: "z".into() },
+    ];
+    let paths: HashSet<_> = roles.iter().map(|r| r.sentinel_path()).collect();
+    assert_eq!(paths.len(), roles.len());
+}
+
+#[test]
+fn cluster_config_accepts_node_role_from_json() {
+    let json = r#"{
+        "cluster_name": "kazoku",
+        "role": "server",
+        "node_role": { "kind": "server_init" }
+    }"#;
+    let config = ClusterConfig::from_json(json).unwrap();
+    assert_eq!(config.node_role, Some(NodeRoleConfig::ServerInit));
+}
+
+#[test]
+fn cluster_config_accepts_node_role_agent_gpu_with_driver() {
+    let json = r#"{
+        "cluster_name": "kazoku",
+        "role": "agent",
+        "node_role": { "kind": "agent_gpu", "driver": "nvidia-open" }
+    }"#;
+    let config = ClusterConfig::from_json(json).unwrap();
+    assert_eq!(
+        config.node_role,
+        Some(NodeRoleConfig::AgentGpu { driver: "nvidia-open".into() })
+    );
+}
+
+#[test]
+fn cluster_config_defaults_node_role_to_none_for_backwards_compat() {
+    let config = ClusterConfig::from_json(MINIMAL_JSON).unwrap();
+    assert_eq!(config.node_role, None);
+    // Legacy binary role field still works.
+    assert_eq!(config.role, "server");
+}

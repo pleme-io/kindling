@@ -604,7 +604,15 @@ pub fn run(config_path: &Path) -> Result<()> {
         let config = ClusterConfig::load(config_path)?;
 
         if let Some(ref fluxcd) = config.fluxcd {
-            if config.role == "server" {
+            // Flux manifests only belong on control-plane nodes. Prefer
+            // multi-role NodeRole when present; fall back to the legacy
+            // `role: "server"` field for backwards compat.
+            let is_server = config
+                .node_role
+                .as_ref()
+                .map(|r| r.is_server())
+                .unwrap_or(config.role == "server");
+            if is_server {
                 // Write gotk-sync manifest to K3s auto-deploy directory
                 let manifests_dir = std::path::Path::new("/var/lib/rancher/k3s/server/manifests");
                 let _ = std::fs::create_dir_all(manifests_dir);
@@ -787,6 +795,76 @@ fn generate_k3s_config_yaml(config: &ClusterConfig) -> Result<String> {
 /// Write `/etc/rancher/k3s/config.yaml` for K3s runtime configuration.
 ///
 /// When `skip_nix_rebuild` is true, the NixOS K3s systemd unit has the AMI's
+/// Write the role sentinel(s) that drive systemd `ConditionPathExists`
+/// role selection. Returns the name of the systemd unit that will wake.
+///
+/// Two sentinel surfaces:
+///
+/// 1. **Multi-role** (`config.node_role.is_some()`): clears every
+///    `role-{slug}` sentinel, then writes the selected one. Mirrors
+///    `arch-synthesizer::k3s::NodeRole::sentinel_path()` byte-for-byte.
+///
+/// 2. **Legacy binary** (`config.node_role.is_none()`): writes either
+///    `server-mode` or `agent-mode` per `config.role`. Kept for
+///    backwards compatibility with AMIs built before the multi-role
+///    surface landed.
+///
+/// Invariant: at any point, at most one sentinel (legacy OR multi-role)
+/// exists on disk. The writer removes the opposite side before writing.
+fn write_role_sentinels(
+    sentinel_dir: &Path,
+    config: &ClusterConfig,
+) -> Result<&'static str> {
+    use super::cluster_config::NodeRoleConfig;
+
+    let server_mode = sentinel_dir.join("server-mode");
+    let agent_mode = sentinel_dir.join("agent-mode");
+
+    if let Some(ref node_role) = config.node_role {
+        // Multi-role path: clear every role-* sentinel + both legacy
+        // sentinels, then write exactly the selected role sentinel.
+        for slug in NodeRoleConfig::all_slugs() {
+            let _ = std::fs::remove_file(sentinel_dir.join(format!("role-{}", slug)));
+        }
+        let _ = std::fs::remove_file(&server_mode);
+        let _ = std::fs::remove_file(&agent_mode);
+
+        let path = node_role.sentinel_path();
+        std::fs::write(&path, node_role.slug())
+            .with_context(|| format!("failed to write sentinel {}", path.display()))?;
+        println!(
+            "{} Role {}: wrote {} ({} will start)",
+            "ok".green().bold(),
+            node_role.slug(),
+            path.display(),
+            node_role.systemd_unit(),
+        );
+        Ok(node_role.systemd_unit())
+    } else if config.role == "server" {
+        // Legacy binary — server.
+        let _ = std::fs::remove_file(&agent_mode);
+        std::fs::write(&server_mode, "server")
+            .with_context(|| format!("failed to write sentinel {}", server_mode.display()))?;
+        println!(
+            "{} Server mode: wrote {}",
+            "ok".green().bold(),
+            server_mode.display()
+        );
+        Ok("k3s.service")
+    } else {
+        // Legacy binary — agent.
+        let _ = std::fs::remove_file(&server_mode);
+        std::fs::write(&agent_mode, "agent")
+            .with_context(|| format!("failed to write sentinel {}", agent_mode.display()))?;
+        println!(
+            "{} Agent mode: wrote {} (k3s-agent.service will start)",
+            "ok".green().bold(),
+            agent_mode.display()
+        );
+        Ok("k3s-agent.service")
+    }
+}
+
 /// default flags. This config file overrides K3s behavior at startup.
 ///
 /// Calls `generate_k3s_config_yaml` for the pure config generation, then
@@ -821,37 +899,26 @@ fn write_k3s_runtime_config(config: &ClusterConfig) -> Result<()> {
         content.len()
     );
 
-    // Write role sentinel file for systemd ConditionPathExists-based role selection.
-    // k3s.service has ConditionPathExists=/var/lib/kindling/server-mode.
-    // k3s-agent.service has ConditionPathExists=/var/lib/kindling/agent-mode.
-    // Both services are in wantedBy=multi-user.target and ordered After=kindling-init.
-    // Systemd evaluates conditions at execution time, after ordering — no race.
-    // If neither sentinel exists (AMI build, no userdata), neither service starts.
+    // Write role sentinel(s) for systemd ConditionPathExists role selection.
+    //
+    // Two sentinel surfaces — the K3s NixOS module picks whichever is set:
+    //
+    // 1. Multi-role (NEW): `config.node_role` is Some(_). One of six slugs
+    //    (server-init, server-join, agent, agent-gpu, agent-storage,
+    //    agent-ingress) drives a per-role sentinel at
+    //    /var/lib/kindling/role-{slug}. All non-selected role-* sentinels
+    //    are cleared first so exactly one ever exists at a time.
+    //
+    // 2. Legacy binary: `config.node_role` is None. Fall back to the
+    //    server-mode / agent-mode sentinels driven by `config.role`.
+    //
+    // Both services are in wantedBy=multi-user.target and ordered
+    // After=kindling-init. systemd evaluates conditions at execution
+    // time, after ordering — no race. If no sentinel exists (AMI build,
+    // no userdata), neither K3s service starts.
     let sentinel_dir = std::path::Path::new("/var/lib/kindling");
-    let server_sentinel = sentinel_dir.join("server-mode");
-    let agent_sentinel = sentinel_dir.join("agent-mode");
     let _ = std::fs::create_dir_all(sentinel_dir);
-    let k3s_service = if config.role == "server" {
-        let _ = std::fs::remove_file(&agent_sentinel);
-        std::fs::write(&server_sentinel, "server")
-            .with_context(|| format!("failed to write sentinel {}", server_sentinel.display()))?;
-        println!(
-            "{} Server mode: wrote {}",
-            "ok".green().bold(),
-            server_sentinel.display()
-        );
-        "k3s.service"
-    } else {
-        let _ = std::fs::remove_file(&server_sentinel);
-        std::fs::write(&agent_sentinel, "agent")
-            .with_context(|| format!("failed to write sentinel {}", agent_sentinel.display()))?;
-        println!(
-            "{} Agent mode: wrote {} (k3s-agent.service will start)",
-            "ok".green().bold(),
-            agent_sentinel.display()
-        );
-        "k3s-agent.service"
-    };
+    let k3s_service = write_role_sentinels(sentinel_dir, config)?;
 
     // Agents: K3s has built-in jitter-aware retry for server connectivity.
     // When k3s-agent starts and the CP isn't ready, K3s retries with 5s base

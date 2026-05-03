@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::node_identity::{
     FluxcdConfig, KubernetesConfig, NodeIdentity, SecretsConfig, UserConfig,
@@ -77,6 +77,97 @@ pub struct ClusterConfig {
     /// Default: false (max-baked AMI path — no rebuild needed).
     #[serde(default)]
     pub force_rebuild: Option<bool>,
+
+    /// Multi-role node role selection. When set, kindling-init writes a
+    /// per-role sentinel file at `/var/lib/kindling/role-{slug}` and the
+    /// blackmatter-kubernetes K3s NixOS module routes via `roleSentinels`.
+    /// Mirrors `arch-synthesizer::k3s::NodeRole`.
+    ///
+    /// When `None` (default), falls back to the legacy binary sentinel
+    /// (`/var/lib/kindling/server-mode` or `agent-mode`) driven by the
+    /// `role: "server" | "agent"` field.
+    #[serde(default)]
+    pub node_role: Option<NodeRoleConfig>,
+}
+
+/// Node role — mirrors `arch-synthesizer::k3s::NodeRole` variants.
+/// Each variant writes exactly one sentinel at
+/// `/var/lib/kindling/role-{slug}`, which the K3s NixOS module's
+/// `roleSentinels` option consumes via systemd `ConditionPathExists`.
+///
+/// Invariants:
+/// - Exactly one sentinel is present on disk at any time. The writer
+///   clears every other `role-*` sentinel before creating the chosen one.
+/// - `is_server()` ⇒ k3s.service wakes; `!is_server()` ⇒ k3s-agent.service.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NodeRoleConfig {
+    /// First control-plane node — bootstraps embedded etcd.
+    ServerInit,
+    /// Additional control-plane nodes joining the initialized cluster.
+    ServerJoin,
+    /// Generic worker.
+    Agent,
+    /// GPU-attached worker. `driver` names the driver stack baked into
+    /// the AMI (e.g. "nvidia-open", "nvidia-proprietary", "amd-rocm").
+    AgentGpu { driver: String },
+    /// Storage-backing worker. `backend` names the provisioner
+    /// (e.g. "longhorn", "openebs", "ebs-csi", "local-path").
+    AgentStorage { backend: String },
+    /// Ingress-controller worker. `ingress_class` names the controller
+    /// (e.g. "cilium-gateway", "nginx-ingress", "traefik", "istio-gateway").
+    AgentIngress { ingress_class: String },
+}
+
+impl NodeRoleConfig {
+    /// Stable slug — feeds sentinel path, systemd unit name, and tags.
+    /// Byte-identical to `arch-synthesizer::k3s::NodeRole::slug()`.
+    pub fn slug(&self) -> &'static str {
+        match self {
+            Self::ServerInit => "server-init",
+            Self::ServerJoin => "server-join",
+            Self::Agent => "agent",
+            Self::AgentGpu { .. } => "agent-gpu",
+            Self::AgentStorage { .. } => "agent-storage",
+            Self::AgentIngress { .. } => "agent-ingress",
+        }
+    }
+
+    /// Filesystem path the K3s NixOS module checks via
+    /// `ConditionPathExists`. kindling-init writes this file exactly
+    /// once per boot.
+    pub fn sentinel_path(&self) -> PathBuf {
+        PathBuf::from(format!("/var/lib/kindling/role-{}", self.slug()))
+    }
+
+    /// Server roles activate `k3s.service`. Agent roles activate
+    /// `k3s-agent.service`.
+    pub fn is_server(&self) -> bool {
+        matches!(self, Self::ServerInit | Self::ServerJoin)
+    }
+
+    /// systemd unit the role starts.
+    pub fn systemd_unit(&self) -> &'static str {
+        if self.is_server() {
+            "k3s.service"
+        } else {
+            "k3s-agent.service"
+        }
+    }
+
+    /// Canonical slug list — matches `arch-synthesizer::k3s::ALL_ROLE_SLUGS`.
+    /// Used by the sentinel writer to clear every non-selected sentinel
+    /// before writing the chosen one.
+    pub fn all_slugs() -> &'static [&'static str] {
+        &[
+            "server-init",
+            "server-join",
+            "agent",
+            "agent-gpu",
+            "agent-storage",
+            "agent-ingress",
+        ]
+    }
 }
 
 /// FluxCD bootstrap configuration from cloud-init.
