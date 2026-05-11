@@ -31,6 +31,13 @@ use crate::node_identity::NodeIdentity;
 pub enum BootstrapPhase {
     Pending,
     ConfigLoaded,
+    /// Persistent state EBS volume discovered, attached, formatted
+    /// (first boot only), and mounted at `persistent_state.mount_path`.
+    /// Skipped (no-op transition) when `persistent_state` is unset.
+    /// Always inserted between ConfigLoaded and SecretsProvisioned so
+    /// the persistent volume is in place before any state-writing
+    /// phase touches the filesystem.
+    PersistentStateAttached,
     SecretsProvisioned,
     #[serde(alias = "wireguard_fast_start")]
     HostnameSet,
@@ -50,6 +57,7 @@ impl std::fmt::Display for BootstrapPhase {
         let s = match self {
             Self::Pending => "pending",
             Self::ConfigLoaded => "config_loaded",
+            Self::PersistentStateAttached => "persistent_state_attached",
             Self::SecretsProvisioned => "secrets_provisioned",
             Self::HostnameSet => "hostname_set",
             Self::K3sConfigWritten => "k3s_config_written",
@@ -70,6 +78,7 @@ impl std::str::FromStr for BootstrapPhase {
         match s {
             "pending" => Ok(Self::Pending),
             "config_loaded" => Ok(Self::ConfigLoaded),
+            "persistent_state_attached" => Ok(Self::PersistentStateAttached),
             "secrets_provisioned" => Ok(Self::SecretsProvisioned),
             "hostname_set" | "wireguard_fast_start" => Ok(Self::HostnameSet),
             "k3s_config_written" | "identity_written" | "nix_rebuild_running"
@@ -348,9 +357,58 @@ pub fn run(config_path: &Path) -> Result<()> {
         }
     }
 
+    // Phase: Attach + mount persistent state volume (opt-in).
+    //
+    // When config.persistent_state is set, discover the cluster's
+    // tagged EBS volume, attach it to this instance, mkfs on first
+    // boot, and mount at the configured mount_path. Must run BEFORE
+    // SecretsProvisioned so the k3s data directory (default
+    // /var/lib/rancher/k3s) is on persistent storage from the very
+    // first byte k3s writes. Idempotent across reboots.
+    //
+    // When config.persistent_state is None, this phase is a no-op
+    // pass-through — preserves v0 behaviour for every cluster that
+    // hasn't opted in.
+    if state.phase == BootstrapPhase::ConfigLoaded {
+        let config = ClusterConfig::load(config_path)?;
+        if let Some(ps) = &config.persistent_state {
+            // Bridge sync bootstrap code → async aws-sdk call.
+            // tokio::runtime::Runtime::new is cheap and one-shot here.
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("build tokio runtime for persistent-state attach")
+                .and_then(|rt| {
+                    rt.block_on(super::persistent_state::attach_and_mount(ps, &config.cluster_name))
+                });
+            match result {
+                Ok(()) => {
+                    println!(
+                        "{} Persistent state volume attached + mounted at {}",
+                        "ok".green().bold(),
+                        ps.mount_path
+                    );
+                }
+                Err(e) => {
+                    state.fail(&e.to_string())?;
+                    bail!("persistent state attach failed: {}", e);
+                }
+            }
+        } else {
+            println!(
+                "{} persistent_state: not configured — skipping",
+                "::".blue().bold()
+            );
+        }
+        state.transition(BootstrapPhase::PersistentStateAttached)?;
+        if test_mode {
+            tag_instance_phase("persistent_state_attached");
+        }
+    }
+
     // Phase: Provision bootstrap secrets (age key, GitHub token, PKI, etc.)
     // MUST run before NixOS rebuild so sops-nix can find the age key.
-    if state.phase == BootstrapPhase::ConfigLoaded {
+    if state.phase == BootstrapPhase::PersistentStateAttached {
         let config = ClusterConfig::load(config_path)?;
         match provision_bootstrap_secrets(&config) {
             Ok(provisioned) => {
@@ -1581,6 +1639,10 @@ mod tests {
         assert_eq!(BootstrapPhase::Pending.to_string(), "pending");
         assert_eq!(BootstrapPhase::ConfigLoaded.to_string(), "config_loaded");
         assert_eq!(
+            BootstrapPhase::PersistentStateAttached.to_string(),
+            "persistent_state_attached"
+        );
+        assert_eq!(
             BootstrapPhase::SecretsProvisioned.to_string(),
             "secrets_provisioned"
         );
@@ -1601,6 +1663,7 @@ mod tests {
         let phases = [
             BootstrapPhase::Pending,
             BootstrapPhase::ConfigLoaded,
+            BootstrapPhase::PersistentStateAttached,
             BootstrapPhase::SecretsProvisioned,
             BootstrapPhase::HostnameSet,
             BootstrapPhase::K3sConfigWritten,

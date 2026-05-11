@@ -1069,3 +1069,78 @@ fn cluster_config_defaults_node_role_to_none_for_backwards_compat() {
     // Legacy binary role field still works.
     assert_eq!(config.role, "server");
 }
+
+// ── PersistentStateClusterConfig ─────────────────────────────────────
+
+#[test]
+fn cluster_config_persistent_state_defaults_to_none() {
+    let config = ClusterConfig::from_json(MINIMAL_JSON).unwrap();
+    assert!(config.persistent_state.is_none());
+}
+
+#[test]
+fn cluster_config_accepts_persistent_state_full_shape() {
+    let json = r#"{
+        "cluster_name": "kazoku",
+        "role": "server",
+        "persistent_state": {
+            "size_gb": 100,
+            "volume_type": "gp3",
+            "mount_path": "/var/lib/rancher/k3s",
+            "filesystem": "ext4",
+            "discovery_tag": "PersistentStateFor",
+            "encrypted": true,
+            "device": "/dev/xvdf",
+            "availability_zone": "us-east-1a"
+        }
+    }"#;
+    let config = ClusterConfig::from_json(json).unwrap();
+    let ps = config.persistent_state.expect("persistent_state present");
+    assert_eq!(ps.size_gb, 100);
+    assert_eq!(ps.volume_type, "gp3");
+    assert_eq!(ps.mount_path, "/var/lib/rancher/k3s");
+    assert_eq!(ps.filesystem, "ext4");
+    assert_eq!(ps.discovery_tag, "PersistentStateFor");
+    assert!(ps.encrypted);
+    assert_eq!(ps.device, "/dev/xvdf");
+    assert_eq!(ps.availability_zone.as_deref(), Some("us-east-1a"));
+}
+
+#[test]
+fn cluster_config_persistent_state_applies_defaults_for_omitted_fields() {
+    // Mirrors the pangea-emitted JSON when only the operator-required
+    // size_gb is set; all other fields come from default fns.
+    let json = r#"{
+        "cluster_name": "kazoku",
+        "role": "server",
+        "persistent_state": {}
+    }"#;
+    let config = ClusterConfig::from_json(json).unwrap();
+    let ps = config.persistent_state.unwrap();
+    assert_eq!(ps.size_gb, 50);
+    assert_eq!(ps.volume_type, "gp3");
+    assert_eq!(ps.mount_path, "/var/lib/rancher/k3s");
+    assert_eq!(ps.filesystem, "ext4");
+    assert_eq!(ps.discovery_tag, "PersistentStateFor");
+    assert!(ps.encrypted);
+    assert_eq!(ps.device, "/dev/xvdf");
+    assert!(ps.availability_zone.is_none());
+}
+
+#[test]
+fn cluster_config_persistent_state_ignores_unknown_fields() {
+    // Forward-compat: a future pangea-kubernetes that adds a new
+    // optional field MUST NOT break older kindling builds. serde's
+    // default is to silently drop unknown fields (we don't use
+    // deny_unknown_fields on this struct).
+    let json = r#"{
+        "cluster_name": "kazoku",
+        "role": "server",
+        "persistent_state": {
+            "size_gb": 50,
+            "future_field_we_haven't_seen": "v2.0-only"
+        }
+    }"#;
+    let config = ClusterConfig::from_json(json).unwrap();
+    assert!(config.persistent_state.is_some());
+}

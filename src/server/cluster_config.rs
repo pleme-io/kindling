@@ -60,6 +60,13 @@ pub struct ClusterConfig {
     #[serde(default)]
     pub vpn: Option<VpnClusterConfig>,
 
+    /// Persistent state EBS volume to discover, attach, and mount
+    /// before k3s starts. Emitted by pangea-kubernetes when the
+    /// operator opts in via ClusterConfig.persistent_state.
+    /// See `PersistentStateClusterConfig` for the field surface.
+    #[serde(default)]
+    pub persistent_state: Option<PersistentStateClusterConfig>,
+
     /// Bootstrap secrets delivered via cloud-init.
     /// Keys: "sops_age_key", "flux_github_token", etc.
     /// Values: the raw secret content (not paths).
@@ -256,6 +263,70 @@ pub struct SecretsClusterConfig {
     #[serde(default)]
     pub sops_file: Option<String>,
 }
+
+/// Persistent state volume from cloud-init.
+///
+/// Emitted by pangea-kubernetes `PersistentStateConfig`. Wire-format
+/// counterpart — every Ruby `to_h` key maps here, and every default
+/// matches the Ruby side. Forward-additive: new optional fields can
+/// be added without breaking older kindling builds.
+///
+/// The PersistentStateAttached bootstrap phase consumes this struct
+/// to discover the volume by `discovery_tag`, attach it to the
+/// current EC2 instance, format it if blank, and mount it at
+/// `mount_path` before k3s starts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistentStateClusterConfig {
+    /// EBS volume size in GiB (informational on the consumer side;
+    /// authority lives in the pangea-emitted aws_ebs_volume).
+    #[serde(default = "default_persistent_size_gb")]
+    pub size_gb: u32,
+
+    /// EBS volume type. Informational here; pangea sets it at
+    /// provision time.
+    #[serde(default = "default_persistent_volume_type")]
+    pub volume_type: String,
+
+    /// Mount path on the node. Default `/var/lib/rancher/k3s` —
+    /// puts the k3s data dir on the persistent volume so cluster
+    /// state survives instance churn.
+    #[serde(default = "default_persistent_mount_path")]
+    pub mount_path: String,
+
+    /// Filesystem to format with on first boot. Subsequent boots
+    /// remount the existing fs.
+    #[serde(default = "default_persistent_filesystem")]
+    pub filesystem: String,
+
+    /// EC2 tag key under which the cluster's persistent volume is
+    /// discoverable from inside the instance. The tag value is
+    /// always the cluster name.
+    #[serde(default = "default_persistent_discovery_tag")]
+    pub discovery_tag: String,
+
+    /// Whether the volume is encrypted at rest. Informational here.
+    #[serde(default = "default_persistent_encrypted")]
+    pub encrypted: bool,
+
+    /// Device path to attach the volume at. EC2 maps this to the
+    /// next available NVMe device on Nitro instances. Default
+    /// `/dev/xvdf` is the canonical first-additional-volume slot.
+    #[serde(default = "default_persistent_device")]
+    pub device: String,
+
+    /// Availability zone the volume lives in. Informational —
+    /// kindling discovers by tag, the AZ is implicit.
+    #[serde(default)]
+    pub availability_zone: Option<String>,
+}
+
+fn default_persistent_size_gb() -> u32 { 50 }
+fn default_persistent_volume_type() -> String { "gp3".into() }
+fn default_persistent_mount_path() -> String { "/var/lib/rancher/k3s".into() }
+fn default_persistent_filesystem() -> String { "ext4".into() }
+fn default_persistent_discovery_tag() -> String { "PersistentStateFor".into() }
+fn default_persistent_encrypted() -> bool { true }
+fn default_persistent_device() -> String { "/dev/xvdf".into() }
 
 /// VPN configuration from cloud-init — defines WireGuard links for the node.
 #[derive(Debug, Clone, Serialize, Deserialize)]

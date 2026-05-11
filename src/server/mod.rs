@@ -3,6 +3,7 @@
 //! Submodules:
 //! - `cluster_config` — parse cloud-init JSON into ClusterConfig
 //! - `bootstrap` — state machine for bootstrap orchestration
+//! - `persistent_state` — EBS volume attach + mount before k3s
 //! - `kubeadm` — kubeadm config generation for upstream Kubernetes
 //! - `health` — K3s API + FluxCD health polling
 //! - `daemon` — HTTP/GraphQL daemon server (pre-existing)
@@ -12,4 +13,5 @@ pub mod cluster_config;
 pub mod daemon;
 pub mod health;
 pub mod kubeadm;
+pub mod persistent_state;
 pub mod wireguard_fast;
