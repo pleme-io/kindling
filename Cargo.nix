@@ -8193,12 +8193,14 @@ rec {
           {
             name = "aws-config";
             packageId = "aws-config";
+            optional = true;
             usesDefaultFeatures = false;
             features = [ "rt-tokio" "rustls" "behavior-version-latest" ];
           }
           {
             name = "aws-sdk-ec2";
             packageId = "aws-sdk-ec2";
+            optional = true;
             usesDefaultFeatures = false;
             features = [ "rt-tokio" "rustls" "behavior-version-latest" ];
           }
@@ -8359,9 +8361,11 @@ rec {
           }
         ];
         features = {
+          "aws" = [ "dep:aws-config" "dep:aws-sdk-ec2" ];
+          "default" = [ "aws" ];
           "grpc" = [ "dep:tonic" "dep:prost" "dep:prost-types" "dep:tonic-build" ];
         };
-        resolvedDefaultFeatures = [ "default" "grpc" ];
+        resolvedDefaultFeatures = [ "aws" "default" "grpc" "pki-only" ];
       };
       "polling" = rec {
         crateName = "polling";

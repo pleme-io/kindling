@@ -17,8 +17,23 @@ name = "kindling"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["aws"]
 grpc = ["dep:tonic", "dep:prost", "dep:prost-types", "dep:tonic-build"]
+
+# AWS SDK (aws-sdk-ec2 + aws-config) is the bottleneck of kindling's
+# build time — 600k+ LoC after macro expansion, OOMs small builders.
+# Only used by `server::persistent_state` (EBS attach-and-mount on
+# pangea-kubernetes AMI clusters). Kasou local-VM consumers that
+# only need `pki seed` / `pki provision` skip it via
+# `cargo build --no-default-features --features pki-only` (or the
+# nix consumer specifies `cargoNoDefaultFeatures = true`).
+aws = ["dep:aws-config", "dep:aws-sdk-ec2"]
+
+# Minimal feature set for kasou-VM consumers — kindling-pki-seed.service
+# only needs pki + the binary surface; no AWS, no gRPC, no fleet sync.
+# Future: split into a separate `kindling-pki` binary; for now feature
+# selection keeps it one crate.
+pki-only = []
 
 [dependencies]
 # CLI
@@ -53,11 +68,14 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking"], def
 
 # AWS SDK — for the PersistentStateAttached bootstrap phase
 # (discover-by-tag + attach EBS volume on AWS-NixOS k3s control
-# planes). Pulled in unconditionally so the same binary boots every
-# pangea-kubernetes-provisioned cluster; on non-AWS backends the
-# phase short-circuits before any AWS call.
-aws-config = { version = "1.5", default-features = false, features = ["rt-tokio", "rustls", "behavior-version-latest"] }
-aws-sdk-ec2 = { version = "1.55", default-features = false, features = ["rt-tokio", "rustls", "behavior-version-latest"] }
+# planes). Optional + default-enabled per [features]: AMI consumers
+# build with `--features aws` (the default); kasou-VM consumers
+# build with `--no-default-features` to drop the dep entirely and
+# cut build time by ~5-10x (aws-sdk-ec2 alone is 600k+ LoC after
+# macro expansion). Gated at server::persistent_state module level
+# and at the attach_and_mount call site in server::bootstrap.
+aws-config = { version = "1.5", default-features = false, features = ["rt-tokio", "rustls", "behavior-version-latest"], optional = true }
+aws-sdk-ec2 = { version = "1.55", default-features = false, features = ["rt-tokio", "rustls", "behavior-version-latest"], optional = true }
 
 # Hashing
 sha2 = "0.10"

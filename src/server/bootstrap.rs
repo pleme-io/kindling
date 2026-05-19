@@ -372,27 +372,45 @@ pub fn run(config_path: &Path) -> Result<()> {
     if state.phase == BootstrapPhase::ConfigLoaded {
         let config = ClusterConfig::load(config_path)?;
         if let Some(ps) = &config.persistent_state {
-            // Bridge sync bootstrap code → async aws-sdk call.
-            // tokio::runtime::Runtime::new is cheap and one-shot here.
-            let result = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("build tokio runtime for persistent-state attach")
-                .and_then(|rt| {
-                    rt.block_on(super::persistent_state::attach_and_mount(ps, &config.cluster_name))
-                });
-            match result {
-                Ok(()) => {
-                    println!(
-                        "{} Persistent state volume attached + mounted at {}",
-                        "ok".green().bold(),
-                        ps.mount_path
-                    );
+            #[cfg(feature = "aws")]
+            {
+                // Bridge sync bootstrap code → async aws-sdk call.
+                // tokio::runtime::Runtime::new is cheap and one-shot here.
+                let result = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .context("build tokio runtime for persistent-state attach")
+                    .and_then(|rt| {
+                        rt.block_on(super::persistent_state::attach_and_mount(ps, &config.cluster_name))
+                    });
+                match result {
+                    Ok(()) => {
+                        println!(
+                            "{} Persistent state volume attached + mounted at {}",
+                            "ok".green().bold(),
+                            ps.mount_path
+                        );
+                    }
+                    Err(e) => {
+                        state.fail(&e.to_string())?;
+                        bail!("persistent state attach failed: {}", e);
+                    }
                 }
-                Err(e) => {
-                    state.fail(&e.to_string())?;
-                    bail!("persistent state attach failed: {}", e);
-                }
+            }
+            #[cfg(not(feature = "aws"))]
+            {
+                // Hard fail: a cluster config that requests persistent-state
+                // attach can only succeed against AWS. Without the `aws`
+                // feature, kindling can't fulfill the contract — bail
+                // loudly rather than silently skip the phase.
+                let _ = ps; // suppress unused
+                let msg = format!(
+                    "cluster {} configured with persistent_state but kindling was built without the `aws` feature; \
+                     rebuild with `cargo build --features aws` (default) or remove persistent_state from the cluster config",
+                    config.cluster_name
+                );
+                state.fail(&msg)?;
+                bail!("{msg}");
             }
         } else {
             println!(
