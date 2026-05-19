@@ -84,6 +84,12 @@ thiserror = "2.0.18"
 # Deterministic k3s PKI (kindling pki mint + seed).
 rcgen = { version = "0.13", default-features = false, features = ["aws_lc_rs", "pem"] }
 time = { version = "0.3", default-features = false, features = ["std"] }
+# RSA for the k3s service-account signing key. rcgen only generates
+# ECDSA/Ed25519; k3s' --service-account-key-file loader rejects
+# ECDSA in PKCS#8 with "data does not contain any valid RSA or ECDSA
+# public keys" (Kubernetes apiserver convention is RSA-2048+ for
+# ServiceAccount token signing).
+rsa = { version = "0.9", default-features = false, features = ["pem", "std"] }
 
 [dev-dependencies]
 tempfile = "3.14"

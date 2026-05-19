@@ -31,6 +31,7 @@ use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair,
     KeyUsagePurpose,
 };
+use rsa::pkcs8::EncodePrivateKey as _;
 use time::OffsetDateTime;
 
 /// The single source of truth for which k3s PKI files engenho's deterministic
@@ -439,7 +440,21 @@ fn mint_full_bag(admin_cn: &str, validity_days: u32) -> Result<MintedBag> {
     let client_ca = mint_ca("k3s-client-ca", not_before, not_after)?;
     let request_header_ca =
         mint_ca("k3s-request-header-ca", not_before, not_after)?;
-    let service_key = KeyPair::generate()?;
+    // RSA-2048 for the k3s service-account signing key. The k3s
+    // apiserver --service-account-key-file loader rejects ECDSA in
+    // PKCS#8 ("data does not contain any valid RSA or ECDSA public
+    // keys") even though PKCS#8 ECDSA is structurally valid. Matches
+    // the auto-generated shape k3s itself produces.
+    // Use rsa's bundled rand_core OsRng to avoid the rand 0.8/0.9 split:
+    // kindling pins rand = "0.9" (newer ThreadRng implements rand_core 0.9's
+    // trait), but rsa = "0.9" wants rand_core 0.6's CryptoRngCore.
+    let mut rng = rsa::rand_core::OsRng;
+    let service_key_rsa = rsa::RsaPrivateKey::new(&mut rng, 2048)
+        .context("generate RSA-2048 for service-account signing")?;
+    let service_key_pem = service_key_rsa
+        .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+        .context("encode service-account key as PKCS#8 PEM")?
+        .to_string();
 
     let mut admin_params = CertificateParams::default();
     admin_params.not_before = not_before;
@@ -470,7 +485,7 @@ fn mint_full_bag(admin_cn: &str, validity_days: u32) -> Result<MintedBag> {
         client_ca_key:         b64(client_ca.key.serialize_pem()),
         request_header_ca_crt: b64(request_header_ca.cert.pem()),
         request_header_ca_key: b64(request_header_ca.key.serialize_pem()),
-        service_key:           b64(service_key.serialize_pem()),
+        service_key:           b64(service_key_pem),
         admin_crt:             b64(admin_cert.pem()),
         admin_key:             b64(admin_key.serialize_pem()),
     })
