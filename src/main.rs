@@ -163,6 +163,15 @@ enum Commands {
         command: VpnCommands,
     },
 
+    /// Deterministic k3s PKI: mint cluster CA roots + admin cert, or
+    /// seed them from sops-nix into /var/lib/rancher/k3s/server/tls/
+    /// before k3s.service starts (kasou-VM counterpart to the EC2
+    /// userdata path in `kindling init`).
+    Pki {
+        #[command(subcommand)]
+        command: PkiCommands,
+    },
+
     /// Apply one or more hardening profiles to this host
     Harden(commands::harden::HardenArgs),
 
@@ -306,6 +315,44 @@ enum VpnCommands {
 }
 
 #[derive(Subcommand)]
+enum PkiCommands {
+    /// Generate the full k3s PKI bag (server-CA, client-CA,
+    /// request-header-CA, service.key, admin client cert/key) for a
+    /// cluster. Emits a sops-mergeable YAML block on stdout for the
+    /// operator to paste into nix/secrets.yaml under
+    /// `clusters.<name>.tls.*`. Runs ONCE per cluster ever.
+    Mint {
+        /// Cluster name (becomes the sops path prefix + the CN suffix).
+        #[arg(long)]
+        cluster: String,
+
+        /// Common Name for the admin client cert. Default is the k3s
+        /// convention `system:admin`; only change if you know why.
+        #[arg(long, default_value = "system:admin")]
+        admin_cn: String,
+
+        /// Validity period in days. Default ~10 years matches k3s'
+        /// own self-generated CA lifetime.
+        #[arg(long, default_value_t = 3650)]
+        validity_days: u32,
+    },
+    /// Copy decrypted PKI files into `/var/lib/rancher/k3s/server/tls/`.
+    /// Run as a `Before=k3s.service` oneshot. Cleanly skips if no
+    /// matching sops-nix secrets are present (k3s falls back to
+    /// auto-generation, matching pre-fix behaviour).
+    Seed {
+        /// Source backend. Currently only `sops-nix` is supported —
+        /// reads from `/run/secrets/clusters/<cluster>/tls/`.
+        #[arg(long, default_value = "sops-nix")]
+        source: String,
+
+        /// Cluster name (the sops path prefix used by `mint`).
+        #[arg(long)]
+        cluster: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum FleetCommands {
     /// Check connectivity to all fleet peers
     Status,
@@ -408,6 +455,16 @@ fn main() -> anyhow::Result<()> {
         Commands::Server { command } => match command {
             ServerCommands::Bootstrap { config } => commands::server::run_bootstrap(&config),
             ServerCommands::Status => commands::server::run_status(),
+        },
+        Commands::Pki { command } => match command {
+            PkiCommands::Mint {
+                cluster,
+                admin_cn,
+                validity_days,
+            } => commands::pki::run_mint(&cluster, &admin_cn, validity_days),
+            PkiCommands::Seed { source, cluster } => {
+                commands::pki::run_seed(&source, &cluster)
+            }
         },
         Commands::Harden(args) => commands::harden::run_cmd(args),
         Commands::AmiBuild(args) => commands::ami_build::run(args),

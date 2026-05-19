@@ -81,6 +81,10 @@ prost = { version = "0.13", optional = true }
 prost-types = { version = "0.13", optional = true }
 thiserror = "2.0.18"
 
+# Deterministic k3s PKI (kindling pki mint + seed).
+rcgen = { version = "0.13", default-features = false, features = ["aws_lc_rs", "pem"] }
+time = { version = "0.3", default-features = false, features = ["std"] }
+
 [dev-dependencies]
 tempfile = "3.14"
 

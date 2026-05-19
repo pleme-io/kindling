@@ -10,6 +10,7 @@ pub mod fleet;
 pub mod harden;
 pub mod init;
 pub mod install;
+pub mod pki;
 pub mod profile;
 pub mod query;
 pub mod report;
