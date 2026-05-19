@@ -2844,6 +2844,19 @@ rec {
         };
         resolvedDefaultFeatures = [ "alloc" "default" "detect" "std" ];
       };
+      "base64ct" = rec {
+        crateName = "base64ct";
+        version = "1.8.3";
+        edition = "2024";
+        sha256 = "01nyyyx84bhwrcc168hn47d8gvz2pzpv3y3lmck7mq4hw5vh3x9a";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        features = {
+          "std" = [ "alloc" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" ];
+      };
       "bitflags 1.3.2" = rec {
         crateName = "bitflags";
         version = "1.3.2";
@@ -3325,11 +3338,24 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" "std" ];
       };
-      "const-oid" = rec {
+      "const-oid 0.10.2" = rec {
         crateName = "const-oid";
         version = "0.10.2";
         edition = "2024";
         sha256 = "0p7m286mp8aai4sa72g7ji6qm0d4ns8wg4i4b2hj9p9615zm3vx6";
+        libName = "const_oid";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        features = {
+          "arbitrary" = [ "dep:arbitrary" ];
+        };
+      };
+      "const-oid 0.9.6" = rec {
+        crateName = "const-oid";
+        version = "0.9.6";
+        edition = "2021";
+        sha256 = "1y0jnqaq7p2wvspnx7qj76m7hjcqpz73qzvr9l2p9n2s51vr6if2";
         libName = "const_oid";
         authors = [
           "RustCrypto Developers"
@@ -3812,6 +3838,47 @@ rec {
         };
         resolvedDefaultFeatures = [ "alloc" "default" "std" ];
       };
+      "der" = rec {
+        crateName = "der";
+        version = "0.7.10";
+        edition = "2021";
+        sha256 = "1jyxacyxdx6mxbkfw99jz59dzvcd9k17rq01a7xvn1dr6wl87hg7";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        dependencies = [
+          {
+            name = "const-oid";
+            packageId = "const-oid 0.9.6";
+            optional = true;
+          }
+          {
+            name = "pem-rfc7468";
+            packageId = "pem-rfc7468";
+            optional = true;
+            features = [ "alloc" ];
+          }
+          {
+            name = "zeroize";
+            packageId = "zeroize";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+        ];
+        features = {
+          "alloc" = [ "zeroize?/alloc" ];
+          "arbitrary" = [ "dep:arbitrary" "const-oid?/arbitrary" "std" ];
+          "bytes" = [ "dep:bytes" "alloc" ];
+          "derive" = [ "dep:der_derive" ];
+          "flagset" = [ "dep:flagset" ];
+          "oid" = [ "dep:const-oid" ];
+          "pem" = [ "dep:pem-rfc7468" "alloc" "zeroize" ];
+          "std" = [ "alloc" ];
+          "time" = [ "dep:time" ];
+          "zeroize" = [ "dep:zeroize" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" "oid" "pem" "std" "zeroize" ];
+      };
       "deranged" = rec {
         crateName = "deranged";
         version = "0.5.8";
@@ -3945,6 +4012,11 @@ rec {
             optional = true;
           }
           {
+            name = "const-oid";
+            packageId = "const-oid 0.9.6";
+            optional = true;
+          }
+          {
             name = "crypto-common";
             packageId = "crypto-common 0.1.7";
           }
@@ -3962,7 +4034,7 @@ rec {
           "std" = [ "alloc" "crypto-common/std" ];
           "subtle" = [ "dep:subtle" ];
         };
-        resolvedDefaultFeatures = [ "alloc" "block-buffer" "core-api" "default" "std" ];
+        resolvedDefaultFeatures = [ "alloc" "block-buffer" "const-oid" "core-api" "default" "oid" "std" ];
       };
       "digest 0.11.3" = rec {
         crateName = "digest";
@@ -3980,7 +4052,7 @@ rec {
           }
           {
             name = "const-oid";
-            packageId = "const-oid";
+            packageId = "const-oid 0.10.2";
             optional = true;
           }
           {
@@ -6823,10 +6895,20 @@ rec {
         authors = [
           "Marvin Löbel <loebel.marvin@gmail.com>"
         ];
+        dependencies = [
+          {
+            name = "spin";
+            packageId = "spin";
+            optional = true;
+            usesDefaultFeatures = false;
+            features = [ "once" ];
+          }
+        ];
         features = {
           "spin" = [ "dep:spin" ];
           "spin_no_std" = [ "spin" ];
         };
+        resolvedDefaultFeatures = [ "spin" "spin_no_std" ];
       };
       "leb128fmt" = rec {
         crateName = "leb128fmt";
@@ -6855,6 +6937,23 @@ rec {
           "use_std" = [ "std" ];
         };
         resolvedDefaultFeatures = [ "default" "std" ];
+      };
+      "libm" = rec {
+        crateName = "libm";
+        version = "0.2.16";
+        edition = "2021";
+        sha256 = "10brh0a3qjmbzkr5mf5xqi887nhs5y9layvnki89ykz9xb1wxlmn";
+        authors = [
+          "Alex Crichton <alex@alexcrichton.com>"
+          "Amanieu d'Antras <amanieu@gmail.com>"
+          "Jorge Aparicio <japaricious@gmail.com>"
+          "Trevor Gross <tg@trevorgross.com>"
+        ];
+        features = {
+          "default" = [ "arch" ];
+          "unstable" = [ "unstable-intrinsics" "unstable-float" ];
+        };
+        resolvedDefaultFeatures = [ "arch" "default" ];
       };
       "libredox" = rec {
         crateName = "libredox";
@@ -7318,6 +7417,81 @@ rec {
         };
         resolvedDefaultFeatures = [ "default" "std" ];
       };
+      "num-bigint-dig" = rec {
+        crateName = "num-bigint-dig";
+        version = "0.8.6";
+        edition = "2021";
+        sha256 = "1dxh3d8pzjc5k0kpy8gy2qhhhqs7zw8a7m564zl3ib8gcjkdsqg6";
+        libName = "num_bigint_dig";
+        authors = [
+          "dignifiedquire <dignifiedquire@gmail.com>"
+          "The Rust Project Developers"
+        ];
+        dependencies = [
+          {
+            name = "lazy_static";
+            packageId = "lazy_static";
+            usesDefaultFeatures = false;
+            features = [ "spin_no_std" ];
+          }
+          {
+            name = "libm";
+            packageId = "libm";
+          }
+          {
+            name = "num-integer";
+            packageId = "num-integer";
+            usesDefaultFeatures = false;
+            features = [ "i128" ];
+          }
+          {
+            name = "num-iter";
+            packageId = "num-iter";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "num-traits";
+            packageId = "num-traits";
+            usesDefaultFeatures = false;
+            features = [ "i128" ];
+          }
+          {
+            name = "rand";
+            packageId = "rand 0.8.5";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "smallvec";
+            packageId = "smallvec";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "zeroize";
+            packageId = "zeroize";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+        ];
+        devDependencies = [
+          {
+            name = "rand";
+            packageId = "rand 0.8.5";
+            features = [ "small_rng" ];
+          }
+        ];
+        features = {
+          "arbitrary" = [ "dep:arbitrary" ];
+          "default" = [ "std" "u64_digit" ];
+          "fuzz" = [ "arbitrary" "smallvec/arbitrary" ];
+          "prime" = [ "rand/std_rng" ];
+          "rand" = [ "dep:rand" ];
+          "serde" = [ "dep:serde" ];
+          "std" = [ "num-integer/std" "num-traits/std" "smallvec/write" "rand/std" "serde/std" ];
+          "zeroize" = [ "dep:zeroize" ];
+        };
+        resolvedDefaultFeatures = [ "i128" "prime" "rand" "zeroize" ];
+      };
       "num-conv" = rec {
         crateName = "num-conv";
         version = "0.2.1";
@@ -7350,7 +7524,41 @@ rec {
           "default" = [ "std" ];
           "std" = [ "num-traits/std" ];
         };
-        resolvedDefaultFeatures = [ "default" "std" ];
+        resolvedDefaultFeatures = [ "default" "i128" "std" ];
+      };
+      "num-iter" = rec {
+        crateName = "num-iter";
+        version = "0.1.45";
+        edition = "2018";
+        sha256 = "1gzm7vc5g9qsjjl3bqk9rz1h6raxhygbrcpbfl04swlh0i506a8l";
+        libName = "num_iter";
+        authors = [
+          "The Rust Project Developers"
+        ];
+        dependencies = [
+          {
+            name = "num-integer";
+            packageId = "num-integer";
+            usesDefaultFeatures = false;
+            features = [ "i128" ];
+          }
+          {
+            name = "num-traits";
+            packageId = "num-traits";
+            usesDefaultFeatures = false;
+            features = [ "i128" ];
+          }
+        ];
+        buildDependencies = [
+          {
+            name = "autocfg";
+            packageId = "autocfg";
+          }
+        ];
+        features = {
+          "default" = [ "std" ];
+          "std" = [ "num-integer/std" "num-traits/std" ];
+        };
       };
       "num-modular" = rec {
         crateName = "num-modular";
@@ -7393,6 +7601,13 @@ rec {
         authors = [
           "The Rust Project Developers"
         ];
+        dependencies = [
+          {
+            name = "libm";
+            packageId = "libm";
+            optional = true;
+          }
+        ];
         buildDependencies = [
           {
             name = "autocfg";
@@ -7403,7 +7618,7 @@ rec {
           "default" = [ "std" ];
           "libm" = [ "dep:libm" ];
         };
-        resolvedDefaultFeatures = [ "default" "i128" "std" ];
+        resolvedDefaultFeatures = [ "default" "i128" "libm" "std" ];
       };
       "once_cell" = rec {
         crateName = "once_cell";
@@ -7629,6 +7844,27 @@ rec {
           "std" = [ "base64/std" "serde_core?/std" ];
         };
         resolvedDefaultFeatures = [ "default" "std" ];
+      };
+      "pem-rfc7468" = rec {
+        crateName = "pem-rfc7468";
+        version = "0.7.0";
+        edition = "2021";
+        sha256 = "04l4852scl4zdva31c1z6jafbak0ni5pi0j38ml108zwzjdrrcw8";
+        libName = "pem_rfc7468";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        dependencies = [
+          {
+            name = "base64ct";
+            packageId = "base64ct";
+          }
+        ];
+        features = {
+          "alloc" = [ "base64ct/alloc" ];
+          "std" = [ "alloc" "base64ct/std" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" ];
       };
       "percent-encoding" = rec {
         crateName = "percent-encoding";
@@ -7857,6 +8093,74 @@ rec {
         ];
 
       };
+      "pkcs1" = rec {
+        crateName = "pkcs1";
+        version = "0.7.5";
+        edition = "2021";
+        sha256 = "0zz4mil3nchnxljdfs2k5ab1cjqn7kq5lqp62n9qfix01zqvkzy8";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        dependencies = [
+          {
+            name = "der";
+            packageId = "der";
+            features = [ "oid" ];
+          }
+          {
+            name = "pkcs8";
+            packageId = "pkcs8";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "spki";
+            packageId = "spki";
+          }
+        ];
+        features = {
+          "alloc" = [ "der/alloc" "zeroize" "pkcs8?/alloc" ];
+          "pem" = [ "alloc" "der/pem" "pkcs8?/pem" ];
+          "pkcs8" = [ "dep:pkcs8" ];
+          "std" = [ "der/std" "alloc" ];
+          "zeroize" = [ "der/zeroize" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" "pem" "pkcs8" "std" "zeroize" ];
+      };
+      "pkcs8" = rec {
+        crateName = "pkcs8";
+        version = "0.10.2";
+        edition = "2021";
+        sha256 = "1dx7w21gvn07azszgqd3ryjhyphsrjrmq5mmz1fbxkj5g0vv4l7r";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        dependencies = [
+          {
+            name = "der";
+            packageId = "der";
+            features = [ "oid" ];
+          }
+          {
+            name = "spki";
+            packageId = "spki";
+          }
+        ];
+        features = {
+          "3des" = [ "encryption" "pkcs5/3des" ];
+          "alloc" = [ "der/alloc" "der/zeroize" "spki/alloc" ];
+          "des-insecure" = [ "encryption" "pkcs5/des-insecure" ];
+          "encryption" = [ "alloc" "pkcs5/alloc" "pkcs5/pbes2" "rand_core" ];
+          "getrandom" = [ "rand_core/getrandom" ];
+          "pem" = [ "alloc" "der/pem" "spki/pem" ];
+          "pkcs5" = [ "dep:pkcs5" ];
+          "rand_core" = [ "dep:rand_core" ];
+          "sha1-insecure" = [ "encryption" "pkcs5/sha1-insecure" ];
+          "std" = [ "alloc" "der/std" "spki/std" ];
+          "subtle" = [ "dep:subtle" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" "pem" "std" ];
+      };
       "pleme-kindling" = rec {
         crateName = "pleme-kindling";
         version = "0.3.0";
@@ -7963,6 +8267,12 @@ rec {
             packageId = "reqwest";
             usesDefaultFeatures = false;
             features = [ "json" "rustls-tls" "blocking" ];
+          }
+          {
+            name = "rsa";
+            packageId = "rsa";
+            usesDefaultFeatures = false;
+            features = [ "pem" "std" ];
           }
           {
             name = "semver";
@@ -9523,6 +9833,106 @@ rec {
         };
         resolvedDefaultFeatures = [ "alloc" "default" "dev_urandom_fallback" "wasm32_unknown_unknown_js" ];
       };
+      "rsa" = rec {
+        crateName = "rsa";
+        version = "0.9.10";
+        edition = "2021";
+        sha256 = "0bdikdwhcvl1gfh4637m5rdw3fgcl752aiygvzmwlgc8yl1kymxq";
+        authors = [
+          "RustCrypto Developers"
+          "dignifiedquire <dignifiedquire@gmail.com>"
+        ];
+        dependencies = [
+          {
+            name = "const-oid";
+            packageId = "const-oid 0.9.6";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "digest";
+            packageId = "digest 0.10.7";
+            usesDefaultFeatures = false;
+            features = [ "alloc" "oid" ];
+          }
+          {
+            name = "num-bigint-dig";
+            packageId = "num-bigint-dig";
+            rename = "num-bigint";
+            usesDefaultFeatures = false;
+            features = [ "i128" "prime" "zeroize" ];
+          }
+          {
+            name = "num-integer";
+            packageId = "num-integer";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "num-traits";
+            packageId = "num-traits";
+            usesDefaultFeatures = false;
+            features = [ "libm" ];
+          }
+          {
+            name = "pkcs1";
+            packageId = "pkcs1";
+            usesDefaultFeatures = false;
+            features = [ "alloc" "pkcs8" ];
+          }
+          {
+            name = "pkcs8";
+            packageId = "pkcs8";
+            usesDefaultFeatures = false;
+            features = [ "alloc" ];
+          }
+          {
+            name = "rand_core";
+            packageId = "rand_core 0.6.4";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "signature";
+            packageId = "signature";
+            usesDefaultFeatures = false;
+            features = [ "alloc" "digest" "rand_core" ];
+          }
+          {
+            name = "spki";
+            packageId = "spki";
+            usesDefaultFeatures = false;
+            features = [ "alloc" ];
+          }
+          {
+            name = "subtle";
+            packageId = "subtle";
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "zeroize";
+            packageId = "zeroize";
+            features = [ "alloc" ];
+          }
+        ];
+        devDependencies = [
+          {
+            name = "rand_core";
+            packageId = "rand_core 0.6.4";
+            usesDefaultFeatures = false;
+          }
+        ];
+        features = {
+          "default" = [ "std" "pem" "u64_digit" ];
+          "getrandom" = [ "rand_core/getrandom" ];
+          "nightly" = [ "num-bigint/nightly" ];
+          "pem" = [ "pkcs1/pem" "pkcs8/pem" ];
+          "pkcs5" = [ "pkcs8/encryption" ];
+          "serde" = [ "dep:serde" "num-bigint/serde" ];
+          "sha1" = [ "dep:sha1" ];
+          "sha2" = [ "dep:sha2" ];
+          "std" = [ "digest/std" "pkcs1/std" "pkcs8/std" "rand_core/std" "signature/std" ];
+          "u64_digit" = [ "num-bigint/u64_digit" ];
+        };
+        resolvedDefaultFeatures = [ "pem" "std" ];
+      };
       "rustc-hash" = rec {
         crateName = "rustc-hash";
         version = "2.1.1";
@@ -10619,6 +11029,36 @@ rec {
         ];
 
       };
+      "signature" = rec {
+        crateName = "signature";
+        version = "2.2.0";
+        edition = "2021";
+        sha256 = "1pi9hd5vqfr3q3k49k37z06p7gs5si0in32qia4mmr1dancr6m3p";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        dependencies = [
+          {
+            name = "digest";
+            packageId = "digest 0.10.7";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "rand_core";
+            packageId = "rand_core 0.6.4";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+        ];
+        features = {
+          "derive" = [ "dep:derive" ];
+          "digest" = [ "dep:digest" ];
+          "rand_core" = [ "dep:rand_core" ];
+          "std" = [ "alloc" "rand_core?/std" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" "digest" "rand_core" "std" ];
+      };
       "slab" = rec {
         crateName = "slab";
         version = "0.4.12";
@@ -10728,7 +11168,39 @@ rec {
           "ticket_mutex" = [ "mutex" ];
           "use_ticket_mutex" = [ "mutex" "ticket_mutex" ];
         };
-        resolvedDefaultFeatures = [ "mutex" "spin_mutex" ];
+        resolvedDefaultFeatures = [ "mutex" "once" "spin_mutex" ];
+      };
+      "spki" = rec {
+        crateName = "spki";
+        version = "0.7.3";
+        edition = "2021";
+        sha256 = "17fj8k5fmx4w9mp27l970clrh5qa7r5sjdvbsln987xhb34dc7nr";
+        authors = [
+          "RustCrypto Developers"
+        ];
+        dependencies = [
+          {
+            name = "base64ct";
+            packageId = "base64ct";
+            optional = true;
+            usesDefaultFeatures = false;
+          }
+          {
+            name = "der";
+            packageId = "der";
+            features = [ "oid" ];
+          }
+        ];
+        features = {
+          "alloc" = [ "base64ct?/alloc" "der/alloc" ];
+          "arbitrary" = [ "std" "dep:arbitrary" "der/arbitrary" ];
+          "base64" = [ "dep:base64ct" ];
+          "fingerprint" = [ "sha2" ];
+          "pem" = [ "alloc" "der/pem" ];
+          "sha2" = [ "dep:sha2" ];
+          "std" = [ "der/std" "alloc" ];
+        };
+        resolvedDefaultFeatures = [ "alloc" "pem" "std" ];
       };
       "stable_deref_trait" = rec {
         crateName = "stable_deref_trait";
