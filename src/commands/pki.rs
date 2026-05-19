@@ -236,6 +236,323 @@ fn unix_to_offsetdatetime(unix_secs: u64) -> Result<OffsetDateTime> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// `kindling pki provision --cluster <name> --secrets-file <path>`
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Read-first, idempotent, atomic provisioning of a cluster's full TLS bag
+// inside an existing sops-encrypted file. Re-running for an already-
+// provisioned cluster is a no-op; running for a new cluster generates the
+// 9-PEM bag once and re-encrypts in place. `--rotate` forces regeneration.
+//
+// The substrate compounding move: declaration (`pleme.fleet.clusters.<name>`)
+// + one command = ready for `nix run .#rebuild`. Materials for the same
+// cluster name persist across reruns, so a `kindling pki provision`
+// against a known cluster is the cheapest possible no-op.
+
+/// All 9 PKI keys that live under `clusters/<name>/tls/` in sops. The
+/// substrate's "bag" — every entry is base64-encoded PEM.
+const PKI_BAG_KEYS: &[&str] = &[
+    "server-ca-crt",
+    "server-ca-key",
+    "client-ca-crt",
+    "client-ca-key",
+    "request-header-ca-crt",
+    "request-header-ca-key",
+    "service-key",
+    "admin-crt",
+    "admin-key",
+];
+
+pub fn run_provision(
+    cluster: &str,
+    secrets_file: &Path,
+    admin_cn: &str,
+    validity_days: u32,
+    rotate: bool,
+) -> Result<()> {
+    if cluster.is_empty() || cluster.contains(['/', '\\', '\0']) {
+        return Err(anyhow!("--cluster must be a non-empty path-safe identifier"));
+    }
+    if !secrets_file.exists() {
+        return Err(anyhow!(
+            "--secrets-file {} does not exist",
+            secrets_file.display()
+        ));
+    }
+
+    // 1. Decrypt + parse current state.
+    let plaintext = sops_decrypt(secrets_file)?;
+    let mut doc: serde_yaml::Value =
+        serde_yaml::from_str(&plaintext).context("parse decrypted secrets.yaml")?;
+
+    // 2. Inspect what's already under clusters.<name>.tls.
+    let present = inspect_bag(&doc, cluster);
+    let missing: Vec<&str> = PKI_BAG_KEYS
+        .iter()
+        .copied()
+        .filter(|k| !present.contains(*k))
+        .collect();
+
+    if missing.is_empty() && !rotate {
+        eprintln!(
+            "kindling pki provision: cluster {cluster}'s TLS bag is complete — no changes"
+        );
+        return Ok(());
+    }
+    if !missing.is_empty() && missing.len() < PKI_BAG_KEYS.len() && !rotate {
+        return Err(anyhow!(
+            "cluster {cluster}'s TLS bag is partially populated ({}/{} keys present, missing: {:?}). \
+             Pass --rotate to regenerate the full bag (will invalidate kubeconfigs).",
+            PKI_BAG_KEYS.len() - missing.len(),
+            PKI_BAG_KEYS.len(),
+            missing
+        ));
+    }
+
+    eprintln!(
+        "kindling pki provision: {} TLS bag for cluster {cluster}",
+        if rotate { "rotating" } else { "minting fresh" }
+    );
+
+    // 3. Mint the full bag + write under clusters.<name>.tls.
+    let bag = mint_full_bag(admin_cn, validity_days)?;
+    write_bag_to_doc(&mut doc, cluster, &bag)?;
+
+    // 4. Atomic re-encrypt: backup → write plaintext → sops encrypt → verify → cleanup.
+    let new_plaintext =
+        serde_yaml::to_string(&doc).context("serialize updated secrets")?;
+    sops_encrypt_in_place(secrets_file, &new_plaintext)?;
+
+    // 5. Verify: decrypt the new file + confirm every expected key landed.
+    let verify = sops_decrypt(secrets_file)?;
+    let verify_doc: serde_yaml::Value =
+        serde_yaml::from_str(&verify).context("parse re-encrypted secrets")?;
+    let verify_present = inspect_bag(&verify_doc, cluster);
+    for key in PKI_BAG_KEYS {
+        if !verify_present.contains(*key) {
+            return Err(anyhow!(
+                "post-write verification failed: clusters.{cluster}.tls.{key} not visible after sops re-encrypt"
+            ));
+        }
+    }
+
+    eprintln!(
+        "kindling pki provision: wrote {} keys under clusters.{cluster}.tls",
+        PKI_BAG_KEYS.len()
+    );
+    Ok(())
+}
+
+/// What's already populated under `clusters.<name>.tls.*` in the parsed
+/// secrets doc. Returns an empty set if any path segment is missing — a
+/// fresh cluster looks exactly the same as a partially-populated one
+/// with zero keys.
+fn inspect_bag(doc: &serde_yaml::Value, cluster: &str) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    let clusters = doc.get("clusters").and_then(|v| v.as_mapping());
+    let Some(clusters) = clusters else { return set; };
+    let entry = clusters.get(serde_yaml::Value::String(cluster.to_string()));
+    let Some(entry) = entry.and_then(|v| v.as_mapping()) else { return set; };
+    let tls = entry.get(serde_yaml::Value::String("tls".to_string()));
+    let Some(tls) = tls.and_then(|v| v.as_mapping()) else { return set; };
+    for k in PKI_BAG_KEYS {
+        if tls.contains_key(serde_yaml::Value::String((*k).to_string())) {
+            set.insert((*k).to_string());
+        }
+    }
+    set
+}
+
+/// Write the freshly-minted bag into `doc.clusters.<cluster>.tls`,
+/// creating intermediate keys as needed. Replaces any existing value
+/// at each key (assumes the caller has determined a regenerate is
+/// safe — partial-state safety lives in `run_provision`).
+fn write_bag_to_doc(
+    doc: &mut serde_yaml::Value,
+    cluster: &str,
+    bag: &MintedBag,
+) -> Result<()> {
+    let root = doc.as_mapping_mut().ok_or_else(|| anyhow!("secrets.yaml root is not a mapping"))?;
+    let clusters = root
+        .entry(serde_yaml::Value::String("clusters".to_string()))
+        .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+    let clusters_map = clusters
+        .as_mapping_mut()
+        .ok_or_else(|| anyhow!("`clusters` is not a mapping"))?;
+    let cluster_v = clusters_map
+        .entry(serde_yaml::Value::String(cluster.to_string()))
+        .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+    let cluster_map = cluster_v
+        .as_mapping_mut()
+        .ok_or_else(|| anyhow!("`clusters.{cluster}` is not a mapping"))?;
+    let tls_v = cluster_map
+        .entry(serde_yaml::Value::String("tls".to_string()))
+        .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+    let tls_map = tls_v
+        .as_mapping_mut()
+        .ok_or_else(|| anyhow!("`clusters.{cluster}.tls` is not a mapping"))?;
+    let pairs: &[(&str, &str)] = &[
+        ("server-ca-crt", &bag.server_ca_crt),
+        ("server-ca-key", &bag.server_ca_key),
+        ("client-ca-crt", &bag.client_ca_crt),
+        ("client-ca-key", &bag.client_ca_key),
+        ("request-header-ca-crt", &bag.request_header_ca_crt),
+        ("request-header-ca-key", &bag.request_header_ca_key),
+        ("service-key", &bag.service_key),
+        ("admin-crt", &bag.admin_crt),
+        ("admin-key", &bag.admin_key),
+    ];
+    for (k, v) in pairs {
+        tls_map.insert(
+            serde_yaml::Value::String((*k).to_string()),
+            serde_yaml::Value::String((*v).to_string()),
+        );
+    }
+    Ok(())
+}
+
+/// Self-contained mint of every PEM in the bag. Values are
+/// base64-encoded PEM, matching the on-disk sops convention + the
+/// AMI-path SECRET_TARGETS shape.
+struct MintedBag {
+    server_ca_crt:         String,
+    server_ca_key:         String,
+    client_ca_crt:         String,
+    client_ca_key:         String,
+    request_header_ca_crt: String,
+    request_header_ca_key: String,
+    service_key:           String,
+    admin_crt:             String,
+    admin_key:             String,
+}
+
+fn mint_full_bag(admin_cn: &str, validity_days: u32) -> Result<MintedBag> {
+    let validity_secs = u64::from(validity_days) * 86_400;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system time before unix epoch")?
+        .as_secs();
+    let not_before = unix_to_offsetdatetime(now)?;
+    let not_after = unix_to_offsetdatetime(now + validity_secs)?;
+
+    let server_ca = mint_ca("k3s-server-ca", not_before, not_after)?;
+    let client_ca = mint_ca("k3s-client-ca", not_before, not_after)?;
+    let request_header_ca =
+        mint_ca("k3s-request-header-ca", not_before, not_after)?;
+    let service_key = KeyPair::generate()?;
+
+    let mut admin_params = CertificateParams::default();
+    admin_params.not_before = not_before;
+    admin_params.not_after = not_after;
+    admin_params.distinguished_name = DistinguishedName::new();
+    admin_params
+        .distinguished_name
+        .push(DnType::CommonName, admin_cn);
+    admin_params
+        .distinguished_name
+        .push(DnType::OrganizationName, "system:masters");
+    admin_params.is_ca = IsCa::NoCa;
+    admin_params.key_usages = vec![
+        KeyUsagePurpose::DigitalSignature,
+        KeyUsagePurpose::KeyEncipherment,
+    ];
+    admin_params.extended_key_usages =
+        vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
+    let admin_key = KeyPair::generate()?;
+    let admin_cert = admin_params
+        .signed_by(&admin_key, &client_ca.cert, &client_ca.key)?;
+
+    let b64 = |pem: String| base64::engine::general_purpose::STANDARD.encode(pem.as_bytes());
+    Ok(MintedBag {
+        server_ca_crt:         b64(server_ca.cert.pem()),
+        server_ca_key:         b64(server_ca.key.serialize_pem()),
+        client_ca_crt:         b64(client_ca.cert.pem()),
+        client_ca_key:         b64(client_ca.key.serialize_pem()),
+        request_header_ca_crt: b64(request_header_ca.cert.pem()),
+        request_header_ca_key: b64(request_header_ca.key.serialize_pem()),
+        service_key:           b64(service_key.serialize_pem()),
+        admin_crt:             b64(admin_cert.pem()),
+        admin_key:             b64(admin_key.serialize_pem()),
+    })
+}
+
+// ── sops subprocess wrappers ───────────────────────────────────────────
+
+fn sops_decrypt(path: &Path) -> Result<String> {
+    let out = std::process::Command::new("sops")
+        .arg("-d")
+        .arg(path)
+        .output()
+        .context("invoke sops -d (sops binary not in PATH?)")?;
+    if !out.status.success() {
+        return Err(anyhow!(
+            "sops -d {} failed: {}",
+            path.display(),
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    String::from_utf8(out.stdout).context("sops -d output not UTF-8")
+}
+
+/// Replace `path`'s ciphertext with sops-encrypted form of `new_plaintext`.
+/// Safety: keeps a `.kindling-bak` of the original ciphertext until the
+/// re-encrypt succeeds, so a crash mid-flight leaves the file recoverable.
+/// The plaintext only ever exists briefly on disk under the secrets.yaml
+/// name (so sops creation_rules apply) — same directory as the encrypted
+/// file, mode 0600.
+fn sops_encrypt_in_place(path: &Path, new_plaintext: &str) -> Result<()> {
+    let dir = path.parent().ok_or_else(|| anyhow!("path has no parent"))?;
+    let basename = path
+        .file_name()
+        .ok_or_else(|| anyhow!("path has no filename"))?;
+    let bak_path = dir.join(format!("{}.kindling-bak", basename.to_string_lossy()));
+
+    // Step 1: backup current ciphertext.
+    std::fs::copy(path, &bak_path)
+        .with_context(|| format!("backup {} → {}", path.display(), bak_path.display()))?;
+
+    // Step 2: write plaintext at the target path (so .sops.yaml regex matches).
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .mode(0o600)
+            .open(path)
+            .with_context(|| format!("open {} for write", path.display()))?;
+        use std::io::Write as _;
+        f.write_all(new_plaintext.as_bytes())
+            .with_context(|| format!("write plaintext to {}", path.display()))?;
+        f.flush().ok();
+    }
+
+    // Step 3: sops encrypt in place. Run with cwd=dir so creation_rules
+    // path_regex matches the basename relative to the .sops.yaml location.
+    let out = std::process::Command::new("sops")
+        .arg("--encrypt")
+        .arg("--in-place")
+        .arg(basename)
+        .current_dir(dir)
+        .output()
+        .context("invoke sops --encrypt --in-place")?;
+    if !out.status.success() {
+        // Recovery: restore ciphertext from backup so the operator's
+        // secrets file is never left as plaintext on a failed encrypt.
+        let _ = std::fs::copy(&bak_path, path);
+        return Err(anyhow!(
+            "sops --encrypt --in-place failed: {} — original ciphertext restored from {}",
+            String::from_utf8_lossy(&out.stderr),
+            bak_path.display()
+        ));
+    }
+
+    // Step 4: cleanup backup on success.
+    let _ = std::fs::remove_file(&bak_path);
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // `kindling pki seed --source sops-nix --cluster <name>`
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -357,6 +674,115 @@ mod tests {
         let r = run_seed("ec2-userdata", "engenho-local");
         assert!(r.is_err());
         assert!(format!("{}", r.unwrap_err()).contains("unknown --source"));
+    }
+
+    #[test]
+    fn inspect_bag_empty_when_cluster_absent() {
+        let doc: serde_yaml::Value = serde_yaml::from_str("other: 1").unwrap();
+        let present = inspect_bag(&doc, "engenho-local");
+        assert!(present.is_empty());
+    }
+
+    #[test]
+    fn inspect_bag_empty_when_tls_absent() {
+        let doc: serde_yaml::Value = serde_yaml::from_str(
+            "clusters:\n  engenho-local:\n    server-token: hex\n",
+        )
+        .unwrap();
+        let present = inspect_bag(&doc, "engenho-local");
+        assert!(present.is_empty());
+    }
+
+    #[test]
+    fn inspect_bag_lists_present_keys() {
+        let doc: serde_yaml::Value = serde_yaml::from_str(
+            "clusters:\n  engenho-local:\n    tls:\n      server-ca-crt: AAA\n      admin-key: BBB\n",
+        )
+        .unwrap();
+        let present = inspect_bag(&doc, "engenho-local");
+        assert_eq!(present.len(), 2);
+        assert!(present.contains("server-ca-crt"));
+        assert!(present.contains("admin-key"));
+        assert!(!present.contains("admin-crt"));
+    }
+
+    #[test]
+    fn write_bag_creates_intermediate_keys() {
+        let mut doc: serde_yaml::Value = serde_yaml::from_str("other: 1").unwrap();
+        // Force `doc` to be a mapping (serde_yaml might return a Tag-y shape).
+        if doc.as_mapping().is_none() {
+            doc = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        }
+        let bag = MintedBag {
+            server_ca_crt:         "sca".into(),
+            server_ca_key:         "sck".into(),
+            client_ca_crt:         "cca".into(),
+            client_ca_key:         "cck".into(),
+            request_header_ca_crt: "rca".into(),
+            request_header_ca_key: "rck".into(),
+            service_key:           "svk".into(),
+            admin_crt:             "ac".into(),
+            admin_key:             "ak".into(),
+        };
+        write_bag_to_doc(&mut doc, "engenho-local", &bag).unwrap();
+        let yaml = serde_yaml::to_string(&doc).unwrap();
+        assert!(yaml.contains("engenho-local:"));
+        assert!(yaml.contains("server-ca-crt: sca"));
+        assert!(yaml.contains("admin-key: ak"));
+        // Round-trip back through inspect_bag.
+        let reparsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let present = inspect_bag(&reparsed, "engenho-local");
+        assert_eq!(present.len(), PKI_BAG_KEYS.len());
+    }
+
+    #[test]
+    fn write_bag_replaces_existing_values() {
+        let mut doc: serde_yaml::Value = serde_yaml::from_str(
+            "clusters:\n  engenho-local:\n    tls:\n      server-ca-crt: OLD\n",
+        )
+        .unwrap();
+        let bag = MintedBag {
+            server_ca_crt:         "NEW".into(),
+            server_ca_key:         "n".into(),
+            client_ca_crt:         "n".into(),
+            client_ca_key:         "n".into(),
+            request_header_ca_crt: "n".into(),
+            request_header_ca_key: "n".into(),
+            service_key:           "n".into(),
+            admin_crt:             "n".into(),
+            admin_key:             "n".into(),
+        };
+        write_bag_to_doc(&mut doc, "engenho-local", &bag).unwrap();
+        let yaml = serde_yaml::to_string(&doc).unwrap();
+        assert!(yaml.contains("server-ca-crt: NEW"));
+        assert!(!yaml.contains("server-ca-crt: OLD"));
+    }
+
+    #[test]
+    fn mint_full_bag_produces_valid_base64_pem() {
+        let bag = mint_full_bag("system:admin", 365).unwrap();
+        for (name, v) in [
+            ("server_ca_crt", &bag.server_ca_crt),
+            ("server_ca_key", &bag.server_ca_key),
+            ("client_ca_crt", &bag.client_ca_crt),
+            ("client_ca_key", &bag.client_ca_key),
+            ("request_header_ca_crt", &bag.request_header_ca_crt),
+            ("request_header_ca_key", &bag.request_header_ca_key),
+            ("service_key", &bag.service_key),
+            ("admin_crt", &bag.admin_crt),
+            ("admin_key", &bag.admin_key),
+        ] {
+            assert!(!v.is_empty(), "{name} value empty");
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(v)
+                .unwrap_or_else(|e| panic!("{name} not base64: {e}"));
+            let pem = std::str::from_utf8(&decoded)
+                .unwrap_or_else(|e| panic!("{name} decoded bytes not UTF-8: {e}"));
+            assert!(
+                pem.contains("-----BEGIN"),
+                "{name} decoded value isn't PEM: {pem}"
+            );
+        }
     }
 
     #[test]

@@ -336,6 +336,36 @@ enum PkiCommands {
         #[arg(long, default_value_t = 3650)]
         validity_days: u32,
     },
+    /// Read-first, idempotent provisioning of a cluster's TLS bag in
+    /// an existing sops-encrypted file. Generates the 9-PEM bag if
+    /// the cluster has none; no-op if everything is already present;
+    /// `--rotate` forces regeneration (invalidates kubeconfigs).
+    /// Atomic re-encrypt with backup-and-recover semantics.
+    Provision {
+        /// Cluster name (the sops path prefix under `clusters/<name>/tls/`).
+        #[arg(long)]
+        cluster: String,
+
+        /// Path to the sops-encrypted secrets file (typically
+        /// `~/code/github/pleme-io/nix/secrets.yaml`).
+        #[arg(long)]
+        secrets_file: std::path::PathBuf,
+
+        /// Common Name for the admin client cert. Default
+        /// `system:admin` matches k3s' convention.
+        #[arg(long, default_value = "system:admin")]
+        admin_cn: String,
+
+        /// Validity period in days. Default ~10 years.
+        #[arg(long, default_value_t = 3650)]
+        validity_days: u32,
+
+        /// Force regeneration even if the bag is already complete.
+        /// Use only when rotating compromised material — every
+        /// dependent kubeconfig becomes invalid.
+        #[arg(long)]
+        rotate: bool,
+    },
     /// Copy decrypted PKI files into `/var/lib/rancher/k3s/server/tls/`.
     /// Run as a `Before=k3s.service` oneshot. Cleanly skips if no
     /// matching sops-nix secrets are present (k3s falls back to
@@ -462,6 +492,19 @@ fn main() -> anyhow::Result<()> {
                 admin_cn,
                 validity_days,
             } => commands::pki::run_mint(&cluster, &admin_cn, validity_days),
+            PkiCommands::Provision {
+                cluster,
+                secrets_file,
+                admin_cn,
+                validity_days,
+                rotate,
+            } => commands::pki::run_provision(
+                &cluster,
+                &secrets_file,
+                &admin_cn,
+                validity_days,
+                rotate,
+            ),
             PkiCommands::Seed { source, cluster } => {
                 commands::pki::run_seed(&source, &cluster)
             }
