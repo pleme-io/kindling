@@ -171,8 +171,14 @@ in {
         ];
       };
 
-      # Disable amazon-init — kindling-init replaces it
-      virtualisation.amazon-init.enable = mkIf (!cfg.legacyBootstrap) (lib.mkForce false);
+      # NOTE: AMI / EC2 consumers should explicitly set
+      # `virtualisation.amazon-init.enable = false` in their own nixos
+      # config — kindling-init replaces amazon-init's role. The
+      # disable used to live here; it was removed because the kindling
+      # module is also imported into kasou local-VM nixos systems
+      # where the amazon-init option doesn't exist (eval-time
+      # "option does not exist" error). The AMI cluster's config
+      # already sets it false; the line was redundant defence.
 
       # ── Legacy bootstrap (opt-in) ────────────────────────────────────
       #
