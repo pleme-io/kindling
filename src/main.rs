@@ -200,6 +200,9 @@ enum Commands {
         #[command(subcommand)]
         command: commands::query::QueryCommands,
     },
+
+    /// Show the materialized config at a tier (bare/default/discovered/custom/env).
+    ConfigShow(shikumi::cli::ConfigShowCommand),
 }
 
 #[derive(Subcommand)]
@@ -526,5 +529,8 @@ fn main() -> anyhow::Result<()> {
             format,
             command,
         } => commands::query::run(node.as_deref(), &format, &command),
+        Commands::ConfigShow(cmd) => cmd
+            .run::<crate::config::Config>("KINDLING_TIER")
+            .map_err(|e| anyhow::anyhow!(e)),
     }
 }
