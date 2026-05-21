@@ -6,7 +6,7 @@ use figment::providers::{Env, Format, Serialized, Yaml};
 use figment::Figment;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     pub auto_install: Option<bool>,
     pub backend: Option<String>,
@@ -181,6 +181,97 @@ fn default_fleet_state_path() -> String {
         .join("fleet.json")
         .to_string_lossy()
         .to_string()
+}
+
+// ── shikumi::TieredConfig — prime directive ────────────────
+//
+// Every public kindling Config struct impls TieredConfig so operators
+// can request `kindling config-show <tier>` + override via
+// `KINDLING_TIER` env var. bare() = zero-opinion floor;
+// prescribed_default() = the curated kindling defaults that ship.
+
+impl shikumi::TieredConfig for Config {
+    fn bare() -> Self {
+        Self {
+            auto_install: None,
+            backend: None,
+            identity: IdentityConfig::default(),
+            daemon: None,
+            nodes: BTreeMap::new(),
+        }
+    }
+    fn prescribed_default() -> Self {
+        Self::default()
+    }
+}
+
+impl shikumi::TieredConfig for DaemonConfig {
+    fn bare() -> Self {
+        Self {
+            http_addr: String::new(),
+            grpc_addr: String::new(),
+            log_level: String::new(),
+            identity: IdentityConfig::default(),
+            telemetry: TelemetryConfig {
+                enabled: false,
+                vector_url: String::new(),
+                push_interval_secs: 0,
+                node_id: String::new(),
+            },
+            gc: GcConfig::default(),
+            report: ReportConfig {
+                refresh_interval_secs: 0,
+                cache_file: String::new(),
+                max_age_secs: 0,
+            },
+            fleet_controller: FleetControllerConfig {
+                enabled: false,
+                state_file: String::new(),
+            },
+        }
+    }
+    fn prescribed_default() -> Self {
+        Self::default()
+    }
+}
+
+impl shikumi::TieredConfig for TelemetryConfig {
+    fn bare() -> Self {
+        Self {
+            enabled: false,
+            vector_url: String::new(),
+            push_interval_secs: 0,
+            node_id: String::new(),
+        }
+    }
+    fn prescribed_default() -> Self {
+        Self::default()
+    }
+}
+
+impl shikumi::TieredConfig for ReportConfig {
+    fn bare() -> Self {
+        Self {
+            refresh_interval_secs: 0,
+            cache_file: String::new(),
+            max_age_secs: 0,
+        }
+    }
+    fn prescribed_default() -> Self {
+        Self::default()
+    }
+}
+
+impl shikumi::TieredConfig for FleetControllerConfig {
+    fn bare() -> Self {
+        Self {
+            enabled: false,
+            state_file: String::new(),
+        }
+    }
+    fn prescribed_default() -> Self {
+        Self::default()
+    }
 }
 
 // ── Config file paths ──────────────────────────────────────
@@ -363,5 +454,76 @@ nodes:
 "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert!(config.nodes.contains_key("staging"));
+    }
+}
+
+#[cfg(test)]
+mod tiered_tests {
+    use super::*;
+    use shikumi::{ConfigTier, TieredConfig};
+
+    #[test]
+    fn config_bare_is_zero_opinion() {
+        let b = <Config as TieredConfig>::bare();
+        assert!(b.auto_install.is_none());
+        assert!(b.backend.is_none());
+        assert!(b.daemon.is_none());
+        assert!(b.nodes.is_empty());
+    }
+
+    #[test]
+    fn daemon_config_bare_is_zero_opinion() {
+        let b = <DaemonConfig as TieredConfig>::bare();
+        assert_eq!(b.http_addr, "");
+        assert_eq!(b.grpc_addr, "");
+        assert_eq!(b.log_level, "");
+        assert_eq!(b.telemetry.push_interval_secs, 0);
+        assert_eq!(b.report.cache_file, "");
+        assert!(!b.fleet_controller.enabled);
+    }
+
+    #[test]
+    fn daemon_config_prescribed_matches_default() {
+        let p = <DaemonConfig as TieredConfig>::prescribed_default();
+        let d = DaemonConfig::default();
+        assert_eq!(p.http_addr, d.http_addr);
+        assert_eq!(p.grpc_addr, d.grpc_addr);
+        assert_eq!(p.log_level, d.log_level);
+    }
+
+    #[test]
+    fn daemon_config_diff_bare_vs_default_is_non_empty() {
+        let b = <DaemonConfig as TieredConfig>::bare();
+        let d = <DaemonConfig as TieredConfig>::prescribed_default();
+        let diff = d.diff_against(&b);
+        assert!(
+            !diff.is_empty_diff(),
+            "bare and prescribed_default must differ"
+        );
+    }
+
+    #[test]
+    fn daemon_config_resolve_tier_dispatches() {
+        assert_eq!(
+            <DaemonConfig as TieredConfig>::resolve_tier(ConfigTier::Bare).http_addr,
+            ""
+        );
+        assert_eq!(
+            <DaemonConfig as TieredConfig>::resolve_tier(ConfigTier::Default).http_addr,
+            "127.0.0.1:9100"
+        );
+    }
+
+    #[test]
+    fn telemetry_report_fleet_controller_bare_are_zero_opinion() {
+        assert_eq!(
+            <TelemetryConfig as TieredConfig>::bare().vector_url,
+            ""
+        );
+        assert_eq!(
+            <ReportConfig as TieredConfig>::bare().refresh_interval_secs,
+            0
+        );
+        assert!(!<FleetControllerConfig as TieredConfig>::bare().enabled);
     }
 }
