@@ -25151,6 +25151,7 @@
         "sha256": "02w3q7y82hhfnp47xbrdx93bbipq1p4jjvrn19rd7xbpadl9bcck"
       },
       "features": [
+        "cli",
         "default"
       ],
       "proc_macro": false,
