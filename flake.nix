@@ -49,16 +49,14 @@
     # AMI consumers keep the default (full-features) build.
     slimKindlingFor = system: let
       pkgs = import nixpkgs { inherit system; };
-      # Use the COMMITTED Cargo.nix (no crate2nix IFD) to keep
-      # evaluation cheap. Cargo.nix is regenerated explicitly via
-      # `nix run .#regenerate-cargo-nix` after Cargo.lock changes;
-      # bypassing the IFD avoids dragging in crate2nix's full build
-      # closure (proc-macro-error-attr, version_check, structopt-derive)
-      # on every consumer eval.
-      generated = import ./Cargo.nix {
-        inherit pkgs;
-        rootFeatures = [ ];  # drops `default = ["aws"]`
-        defaultCrateOverrides = pkgs.defaultCrateOverrides // {};
+      # Pure-dispatch via substrate's lockfile-builder. Spec lives in
+      # Cargo.build-spec.json; rootFeatures = [] strips the default
+      # "aws" feature for the slim build.
+      lockfileBuilder = import "${substrate}/lib/build/rust/lockfile-builder.nix" { inherit pkgs; };
+      plemeCrateOverrides = import "${substrate}/lib/build/rust/pleme-crate-overrides.nix";
+      generated = lockfileBuilder.mkProject {
+        src = self;
+        defaultCrateOverrides = pkgs.defaultCrateOverrides // plemeCrateOverrides;
       };
     in generated.rootCrate.build;
   in
