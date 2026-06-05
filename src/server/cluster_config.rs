@@ -73,6 +73,15 @@ pub struct ClusterConfig {
     #[serde(default)]
     pub bootstrap_secrets: Option<BTreeMap<String, String>>,
 
+    /// W3b: SSM SecureString references for the secret-free boot path.
+    /// Keys are the same bootstrap-secret names as `bootstrap_secrets`
+    /// (e.g. "sops_age_key", "k3s_server_token"); values are SSM parameter
+    /// PATHS (e.g. "/pangea/akeyless-dev/secrets/sops-age-key"), never the
+    /// secret content. The SSM-fetch step resolves them at boot via the
+    /// node instance role, so no secret value rides in cloud-init / tf.json.
+    #[serde(default)]
+    pub ssm_secret_refs: Option<BTreeMap<String, String>>,
+
     /// Skip nixos-rebuild during bootstrap (for AMI integration testing).
     /// When true, the bootstrap provisions secrets, starts WireGuard, and
     /// starts K3s directly without running nixos-rebuild. The AMI already

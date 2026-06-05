@@ -428,13 +428,27 @@ pub fn run(config_path: &Path) -> Result<()> {
     // MUST run before NixOS rebuild so sops-nix can find the age key.
     if state.phase == BootstrapPhase::PersistentStateAttached {
         let config = ClusterConfig::load(config_path)?;
+        // W3b: fetch secrets from SSM SecureString FIRST (the secret-free
+        // path — no secret values in cloud-init / user_data / tf.json), then
+        // fall back to any cloud-init-embedded bootstrap_secrets. Both write
+        // through the idempotent write_secret_file, so SSM-fetched secrets
+        // take precedence and the legacy dict only fills what SSM didn't.
+        let ssm_provisioned = match provision_ssm_secrets(&config) {
+            Ok(n) => n,
+            Err(e) => {
+                state.fail(&e.to_string())?;
+                bail!("SSM bootstrap-secret fetch failed: {}", e);
+            }
+        };
         match provision_bootstrap_secrets(&config) {
             Ok(provisioned) => {
-                if provisioned > 0 {
+                let total = ssm_provisioned + provisioned;
+                if total > 0 {
                     println!(
-                        "{} Provisioned {} bootstrap secret(s)",
+                        "{} Provisioned {} bootstrap secret(s) ({} from SSM)",
                         "ok".green().bold(),
-                        provisioned
+                        total,
+                        ssm_provisioned
                     );
                 } else {
                     println!(
@@ -1555,6 +1569,94 @@ fn provision_bootstrap_secrets(config: &ClusterConfig) -> Result<usize> {
     }
 
     Ok(provisioned)
+}
+
+// ── W3b: SSM SecureString bootstrap-secret fetch ───────────────────────
+
+/// Fetch bootstrap secrets from AWS SSM SecureString at boot via the node
+/// instance role, writing each to its canonical target path. This is the
+/// secret-free boot path: `ssm_secret_refs` carries only parameter PATHS
+/// (never values), so no secret rides in cloud-init / user_data / tf.json.
+///
+/// Reuses `BOOTSTRAP_SECRET_TARGETS` (target paths/modes/base64) and the
+/// idempotent `write_secret_file`, so it composes with the legacy
+/// `provision_bootstrap_secrets` fallback — whichever runs first wins, and
+/// the other skips. Returns the number of secrets written.
+fn provision_ssm_secrets(config: &ClusterConfig) -> Result<usize> {
+    let refs = match &config.ssm_secret_refs {
+        Some(r) if !r.is_empty() => r,
+        _ => return Ok(0),
+    };
+
+    let mut provisioned = 0;
+
+    for target in BOOTSTRAP_SECRET_TARGETS {
+        let ssm_path = match refs.get(target.key) {
+            Some(p) if !p.is_empty() => p,
+            _ => continue,
+        };
+
+        let raw_value = fetch_ssm_parameter(ssm_path).with_context(|| {
+            format!("failed to fetch SSM parameter {ssm_path} for secret {}", target.key)
+        })?;
+
+        // TLS certs are stored base64-encoded in SSM (same convention as
+        // the cloud-init dict) — decode before writing the PEM.
+        let value = if target.base64_decode {
+            use base64::Engine;
+            match base64::engine::general_purpose::STANDARD.decode(raw_value.trim()) {
+                Ok(decoded) => String::from_utf8(decoded).unwrap_or_else(|_| raw_value.clone()),
+                Err(_) => raw_value.clone(),
+            }
+        } else {
+            raw_value
+        };
+
+        if write_secret_file(
+            Path::new(target.dir),
+            Path::new(target.path),
+            &value,
+            target.dir_mode,
+            target.file_mode,
+        )? {
+            provisioned += 1;
+        }
+    }
+
+    Ok(provisioned)
+}
+
+/// Fetch one SSM SecureString parameter value via the `aws` CLI (already on
+/// the node's systemd PATH; instance-role auth + IMDS region auto-detect).
+/// The CLI is used rather than `aws-sdk-ssm` to avoid adding ~600k LoC to
+/// kindling's build (the SDK is already its build bottleneck). Typed argv,
+/// not a shell string.
+fn fetch_ssm_parameter(name: &str) -> Result<String> {
+    let out = std::process::Command::new("aws")
+        .args([
+            "ssm",
+            "get-parameter",
+            "--name",
+            name,
+            "--with-decryption",
+            "--query",
+            "Parameter.Value",
+            "--output",
+            "text",
+        ])
+        .output()
+        .with_context(|| format!("failed to exec `aws ssm get-parameter --name {name}`"))?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        bail!("aws ssm get-parameter --name {name} failed: {}", stderr.trim());
+    }
+
+    let value = String::from_utf8(out.stdout)
+        .with_context(|| format!("SSM parameter {name} value is not valid UTF-8"))?;
+    // `--output text` appends exactly one trailing newline; strip only that
+    // so the secret bytes are exact (base64/token values have no internal LF).
+    Ok(value.strip_suffix('\n').unwrap_or(&value).to_string())
 }
 
 // ── EC2 tag-based state reporting (test mode only) ─────────────────────
