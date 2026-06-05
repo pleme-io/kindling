@@ -27,7 +27,7 @@ grpc = ["dep:tonic", "dep:prost", "dep:prost-types", "dep:tonic-build"]
 # only need `pki seed` / `pki provision` skip it via
 # `cargo build --no-default-features --features pki-only` (or the
 # nix consumer specifies `cargoNoDefaultFeatures = true`).
-aws = ["dep:aws-config", "dep:aws-sdk-ec2"]
+aws = ["dep:aws-config", "dep:aws-sdk-ec2", "dep:aws-sdk-ssm"]
 
 # Minimal feature set for kasou-VM consumers — kindling-pki-seed.service
 # only needs pki + the binary surface; no AWS, no gRPC, no fleet sync.
@@ -80,6 +80,9 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking"], def
 # and at the attach_and_mount call site in server::bootstrap.
 aws-config = { version = "1.5", default-features = false, features = ["rt-tokio", "rustls", "behavior-version-latest"], optional = true }
 aws-sdk-ec2 = { version = "1.55", default-features = false, features = ["rt-tokio", "rustls", "behavior-version-latest"], optional = true }
+# SSM SecureString bootstrap-secret fetch (W3b). On-node creds come from the
+# instance role via IMDS — no `sso` feature needed (unlike seibi's operator path).
+aws-sdk-ssm = { version = "1", default-features = false, features = ["rt-tokio", "rustls", "behavior-version-latest"], optional = true }
 
 # Hashing
 sha2 = "0.10"

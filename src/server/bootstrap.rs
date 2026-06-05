@@ -1582,81 +1582,82 @@ fn provision_bootstrap_secrets(config: &ClusterConfig) -> Result<usize> {
 /// idempotent `write_secret_file`, so it composes with the legacy
 /// `provision_bootstrap_secrets` fallback — whichever runs first wins, and
 /// the other skips. Returns the number of secrets written.
+///
+/// Typed in-process via aws-sdk-ssm — no `aws` CLI shell-out; the secret value
+/// never leaves the process. SSM-fetch is an AWS-only capability, so it is
+/// gated behind the `aws` feature alongside the EC2 persistent-state code; the
+/// pki-only / local-VM build keeps the no-op fallback below.
+#[cfg(feature = "aws")]
 fn provision_ssm_secrets(config: &ClusterConfig) -> Result<usize> {
     let refs = match &config.ssm_secret_refs {
         Some(r) if !r.is_empty() => r,
         _ => return Ok(0),
     };
 
-    let mut provisioned = 0;
+    // Same one-shot current-thread runtime pattern persistent_state uses to
+    // drive the async SDK from kindling's sync bootstrap state machine.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building tokio runtime for SSM fetch")?;
 
-    for target in BOOTSTRAP_SECRET_TARGETS {
-        let ssm_path = match refs.get(target.key) {
-            Some(p) if !p.is_empty() => p,
-            _ => continue,
-        };
+    rt.block_on(async {
+        // Creds + region come from the node instance role via IMDS.
+        let sdk = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .load()
+            .await;
+        let client = aws_sdk_ssm::Client::new(&sdk);
 
-        let raw_value = fetch_ssm_parameter(ssm_path).with_context(|| {
-            format!("failed to fetch SSM parameter {ssm_path} for secret {}", target.key)
-        })?;
+        let mut provisioned = 0;
+        for target in BOOTSTRAP_SECRET_TARGETS {
+            let ssm_path = match refs.get(target.key) {
+                Some(p) if !p.is_empty() => p,
+                _ => continue,
+            };
 
-        // TLS certs are stored base64-encoded in SSM (same convention as
-        // the cloud-init dict) — decode before writing the PEM.
-        let value = if target.base64_decode {
-            use base64::Engine;
-            match base64::engine::general_purpose::STANDARD.decode(raw_value.trim()) {
-                Ok(decoded) => String::from_utf8(decoded).unwrap_or_else(|_| raw_value.clone()),
-                Err(_) => raw_value.clone(),
+            let resp = client
+                .get_parameter()
+                .name(ssm_path)
+                .with_decryption(true)
+                .send()
+                .await
+                .with_context(|| format!("ssm get-parameter {ssm_path} for secret {}", target.key))?;
+            let raw_value = resp
+                .parameter()
+                .and_then(|p| p.value())
+                .ok_or_else(|| anyhow::anyhow!("SSM parameter {ssm_path} has no value"))?
+                .to_string();
+
+            // TLS certs are stored base64-encoded in SSM — decode the PEM.
+            let value = if target.base64_decode {
+                use base64::Engine;
+                match base64::engine::general_purpose::STANDARD.decode(raw_value.trim()) {
+                    Ok(decoded) => String::from_utf8(decoded).unwrap_or_else(|_| raw_value.clone()),
+                    Err(_) => raw_value.clone(),
+                }
+            } else {
+                raw_value
+            };
+
+            if write_secret_file(
+                Path::new(target.dir),
+                Path::new(target.path),
+                &value,
+                target.dir_mode,
+                target.file_mode,
+            )? {
+                provisioned += 1;
             }
-        } else {
-            raw_value
-        };
-
-        if write_secret_file(
-            Path::new(target.dir),
-            Path::new(target.path),
-            &value,
-            target.dir_mode,
-            target.file_mode,
-        )? {
-            provisioned += 1;
         }
-    }
-
-    Ok(provisioned)
+        Ok::<usize, anyhow::Error>(provisioned)
+    })
 }
 
-/// Fetch one SSM SecureString parameter value via the `aws` CLI (already on
-/// the node's systemd PATH; instance-role auth + IMDS region auto-detect).
-/// The CLI is used rather than `aws-sdk-ssm` to avoid adding ~600k LoC to
-/// kindling's build (the SDK is already its build bottleneck). Typed argv,
-/// not a shell string.
-fn fetch_ssm_parameter(name: &str) -> Result<String> {
-    let out = std::process::Command::new("aws")
-        .args([
-            "ssm",
-            "get-parameter",
-            "--name",
-            name,
-            "--with-decryption",
-            "--query",
-            "Parameter.Value",
-            "--output",
-            "text",
-        ])
-        .output()
-        .with_context(|| format!("failed to exec `aws ssm get-parameter --name {name}`"))?;
-
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        bail!("aws ssm get-parameter --name {name} failed: {}", stderr.trim());
-    }
-
-    let value = String::from_utf8(out.stdout)
-        .with_context(|| format!("SSM parameter {name} value is not valid UTF-8"))?;
-    // `--output text` appends exactly one trailing newline; strip only that
-    // so the secret bytes are exact (base64/token values have no internal LF).
-    Ok(value.strip_suffix('\n').unwrap_or(&value).to_string())
+/// pki-only / local-VM build: SSM-fetch is an AWS-only path. The node falls
+/// back to the cloud-init `bootstrap_secrets` provisioning.
+#[cfg(not(feature = "aws"))]
+fn provision_ssm_secrets(_config: &ClusterConfig) -> Result<usize> {
+    Ok(0)
 }
 
 // ── EC2 tag-based state reporting (test mode only) ─────────────────────
